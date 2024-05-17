@@ -97,6 +97,24 @@ def remove_low_frequency_trends(signal, low_cutoff_frequency, high_cutoff_freque
     filtered_signal = sosfiltfilt(sos_filter, signal)
     return filtered_signal
 
+def cpu_CHROM(signal):
+    """
+    CHROM method on CPU using Numpy.
+
+    De Haan, G., & Jeanne, V. (2013). Robust pulse rate from chrominance-based rPPG. 
+    IEEE Transactions on Biomedical Engineering, 60(10), 2878-2886.
+    """
+    X = signal
+    print(f"Shape of input signal: {X.shape}")  # Add this line for debugging
+    Xcomp = 3*X[:, 0] - 2*X[:, 1]
+    Ycomp = (1.5*X[:, 0]) + X[:, 1] - (1.5*X[:, 2])
+    print(f"Shape of Xcomp: {Xcomp.shape}, Shape of Ycomp: {Ycomp.shape}")  # Add this line for debugging
+    sX = np.std(Xcomp)
+    sY = np.std(Ycomp)
+    alpha = sX / sY
+    bvp = Xcomp - alpha * Ycomp
+    return bvp
+
 def main():
     dataset_folder = "/Users/danillugli/Desktop/Boccignone/BP4D+"
     subject = "M001"
@@ -111,6 +129,10 @@ def main():
 
     # Extract the RGB signals from the video
     rgb_signals = extract_rgb_trace(video_path, output_folder)
+
+    # Combine the RGB signals
+    combined_rgb_signals = np.vstack((rgb_signals['R'], rgb_signals['G'], rgb_signals['B'])).T
+    print(f"Shape of combined_rgb_signals: {combined_rgb_signals.shape}")  # Add this line for debugging
 
     # Set the cutoff frequency and apply bandpass filter
     low_cutoff_frequency = 0.7
@@ -128,6 +150,18 @@ def main():
         plt.ylabel('Intensity')
         plt.savefig(f"{output_folder}/ppg_filtered_{color}.jpg")
         plt.close()
+
+    # Calculate BVP signal using CHROM method
+    bvp_signal = cpu_CHROM(combined_rgb_signals)
+
+    # Save BVP signal
+    np.savetxt(f"{output_folder}/bvp_signal.txt", bvp_signal)
+    plt.plot(bvp_signal)
+    plt.title('BVP Signal')
+    plt.xlabel('Frame')
+    plt.ylabel('Intensity')
+    plt.savefig(f"{output_folder}/bvp_signal.jpg")
+    plt.close()
 
 if __name__ == "__main__":
     main()
