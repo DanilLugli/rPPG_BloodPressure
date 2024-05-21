@@ -1,9 +1,18 @@
-import cv2
-import mediapipe as mp
-import numpy as np
 import os
+print("OK_os")
+import mediapipe as mp
+print("mediapipe importato con successo!")
+import numpy as np
+print("numpy importato con successo!")
+import cv2
+print("cv2 importato con successo!")
 import matplotlib.pyplot as plt
-from scipy.signal import butter, sosfiltfilt
+print("matplotlib importato con successo!")
+from scipy.signal import butter, sosfiltfilt, find_peaks
+print("scipy importato con successo!")
+import heartpy as hp
+print("heartpy importato con successo!")
+
 
 # Setup MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
@@ -115,13 +124,48 @@ def cpu_CHROM(signal):
     bvp = Xcomp - alpha * Ycomp
     return bvp
 
+def calculate_hr_from_bvp(bvp_signal, sampling_rate):
+    wd, m = hp.process(bvp_signal, sample_rate=sampling_rate)
+    heart_rate = m['bpm']
+    return heart_rate, wd
+
+def generate_synthetic_ecg(bvp_peaks, sampling_rate, duration):
+    synthetic_ecg = np.zeros(int(duration * sampling_rate))
+    for peak in bvp_peaks:
+        synthetic_ecg[peak] = 1  # Mettiamo un picco nel segnale sintetico
+    return synthetic_ecg
+
+def calculate_ptt(aligned_ecg_signal, aligned_bvp_signal, ecg_peaks, ppg_peaks, sampling_rate):
+    ptt_values = []
+    for ecg_peak in ecg_peaks:
+        # Trova tutti i picchi PPG successivi al picco ECG corrente
+        subsequent_ppg_peaks = ppg_peaks[ppg_peaks > ecg_peak]
+        if len(subsequent_ppg_peaks) == 0:
+            # Se non ci sono picchi PPG successivi, salta questo picco ECG
+            continue
+        # Trova il primo picco PPG successivo al picco ECG
+        ppg_peak = subsequent_ppg_peaks[0]
+        ptt = (ppg_peak - ecg_peak) / sampling_rate
+        ptt_values.append(ptt)
+    return ptt_values
+
+def get_sampling_rate(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video file: {video_path}")
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    return fps
+
 def main():
     dataset_folder = "/Users/danillugli/Desktop/Boccignone/BP4D+"
-    subject = "M001"
-    task = "T3/"
+    subject = "F001"
+    task = "T1/"
     video_path = dataset_folder + f"/{subject}/{task}vid.avi"
     output_folder = f"NIAC/{subject}/{task}"
-    sampling_rate = 25
+
+    sampling_rate = get_sampling_rate(video_path)
+    print(f"Sampling rate: {sampling_rate} FPS")
 
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
@@ -162,6 +206,39 @@ def main():
     plt.ylabel('Intensity')
     plt.savefig(f"{output_folder}/bvp_signal.jpg")
     plt.close()
+
+    heart_rate, wd = calculate_hr_from_bvp(bvp_signal, sampling_rate)
+
+    ppg_peaks, _ = find_peaks(bvp_signal, distance=sampling_rate/2)
+
+    duration = len(bvp_signal) / sampling_rate
+    synthetic_ecg = generate_synthetic_ecg(ppg_peaks, sampling_rate, duration)
+
+    ecg_peaks = np.where(synthetic_ecg == 1)[0]
+    ptt_values = calculate_ptt(synthetic_ecg, bvp_signal, ecg_peaks, ppg_peaks, sampling_rate)
+
+    # Salva i valori PTT
+    np.savetxt(f"{output_folder}/ptt_values.txt", ptt_values)
+    plt.plot(ptt_values)
+    plt.title('PTT Values')
+    plt.xlabel('Heartbeat')
+    plt.ylabel('PTT (seconds)')
+    plt.savefig(f"{output_folder}/ptt_values.jpg")
+    plt.close()
+
+    print(f"PTT values calculated and saved in {output_folder}")
+
+
+    wd, m = hp.process(bvp_signal, sample_rate=sampling_rate)
+    hp.plotter(wd, m)
+
+    # Save HeartPy analysis results
+    with open(f"{output_folder}/heartpy_results.txt", "w") as f:
+        for key, value in m.items():
+            f.write(f"{key}: {value}\n")
+
+    print(f"Heart rate: {m['bpm']} BPM")
+
 
 if __name__ == "__main__":
     main()
