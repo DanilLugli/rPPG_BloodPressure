@@ -13,7 +13,6 @@ print("scipy importato con successo!")
 import heartpy as hp
 print("heartpy importato con successo!")
 
-
 # Setup MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(
@@ -131,8 +130,13 @@ def calculate_hr_from_bvp(bvp_signal, sampling_rate):
 
 def generate_synthetic_ecg(bvp_peaks, sampling_rate, duration):
     synthetic_ecg = np.zeros(int(duration * sampling_rate))
+    print(f"Number of BVP peaks: {len(bvp_peaks)}")  # Debug: Stampa il numero di picchi BVP
+    print(f"Duration: {duration}, Sampling rate: {sampling_rate}, Total length: {int(duration * sampling_rate)}")  # Debug: Informazioni sul segnale sintetico
     for peak in bvp_peaks:
-        synthetic_ecg[peak] = 1  # Mettiamo un picco nel segnale sintetico
+        print(f"Peak position: {peak}")  # Debug: Posizione del picco
+        synthetic_ecg[peak] = 1  # Imposta il picco nel segnale sintetico
+        print(f"Synthetic ECG signal around peak {peak}: {synthetic_ecg[max(0, peak-5):min(len(synthetic_ecg), peak+6)]}")  # Debugging: stampa il segnale sintetico intorno al picco
+    print(f"Synthetic ECG signal after adding peaks: {synthetic_ecg}")  # Debugging: stampa il segnale sintetico
     return synthetic_ecg
 
 def calculate_ptt(aligned_ecg_signal, aligned_bvp_signal, ecg_peaks, ppg_peaks, sampling_rate):
@@ -157,12 +161,39 @@ def get_sampling_rate(video_path):
     cap.release()
     return fps
 
+def plot_signals(ecg_signal, bvp_signal, ecg_peaks, ppg_peaks, sampling_rate):
+    time_ecg = np.arange(len(ecg_signal)) / sampling_rate
+    time_bvp = np.arange(len(bvp_signal)) / sampling_rate
+
+    plt.figure(figsize=(15, 8))
+    
+    # Plotta il segnale ECG con i picchi
+    plt.subplot(2, 1, 1)
+    plt.plot(time_ecg, ecg_signal, label='ECG Signal')
+    plt.plot(time_ecg[ecg_peaks], ecg_signal[ecg_peaks], "x", label='ECG Peaks')
+    plt.title('ECG Signal')
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Amplitude')
+    plt.legend()
+
+    # Plotta il segnale BVP con i picchi
+    plt.subplot(2, 1, 2)
+    plt.plot(time_bvp, bvp_signal, label='BVP Signal')
+    plt.plot(time_bvp[ppg_peaks], bvp_signal[ppg_peaks], "x", label='PPG Peaks')
+    plt.title('BVP Signal')
+    plt.xlabel('Time (seconds)')
+    plt.ylabel('Amplitude')
+    plt.legend()
+    
+    plt.tight_layout()
+    plt.show()
+
 def main():
     dataset_folder = "/Users/danillugli/Desktop/Boccignone/BP4D+"
-    subject = "F001"
-    task = "T1/"
+    subject = "M001"
+    task = "T3/"
     video_path = dataset_folder + f"/{subject}/{task}vid.avi"
-    output_folder = f"NIAC/{subject}/{task}"
+    output_folder = f"NIAC/mPipe/{subject}/{task}"
 
     sampling_rate = get_sampling_rate(video_path)
     print(f"Sampling rate: {sampling_rate} FPS")
@@ -214,6 +245,8 @@ def main():
     duration = len(bvp_signal) / sampling_rate
     synthetic_ecg = generate_synthetic_ecg(ppg_peaks, sampling_rate, duration)
 
+    print(f"Generated synthetic ECG: {synthetic_ecg}")  # Debugging: stampa il segnale ECG generato
+
     ecg_peaks = np.where(synthetic_ecg == 1)[0]
     ptt_values = calculate_ptt(synthetic_ecg, bvp_signal, ecg_peaks, ppg_peaks, sampling_rate)
 
@@ -228,6 +261,8 @@ def main():
 
     print(f"PTT values calculated and saved in {output_folder}")
 
+    # Verifica della sincronizzazione
+    plot_signals(synthetic_ecg, bvp_signal, ecg_peaks, ppg_peaks, sampling_rate)
 
     wd, m = hp.process(bvp_signal, sample_rate=sampling_rate)
     hp.plotter(wd, m)
@@ -238,7 +273,6 @@ def main():
             f.write(f"{key}: {value}\n")
 
     print(f"Heart rate: {m['bpm']} BPM")
-
 
 if __name__ == "__main__":
     main()
