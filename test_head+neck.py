@@ -258,7 +258,8 @@ def estimate_systolic_blood_pressure(ptt_values, gender):
         b_sbp = 110   # Intercetta per la stima della SBP nelle donne
     else:
         raise ValueError("Gender not recognized. Please specify 'male' or 'female'.")
-    ptt_values = np.array(ptt_values)  
+
+    #ptt_values = np.array(ptt_values)  
     estimated_sbp = a_sbp * ptt_values + b_sbp
     return estimated_sbp
 
@@ -271,7 +272,7 @@ def estimate_diastolic_blood_pressure(ptt_values, gender):
         b_dbp = 75    # Intercetta per la stima della DBP nelle donne
     else:
         raise ValueError("Gender not recognized. Please specify 'male' or 'female'.")
-    ptt_values = np.array(ptt_values)  
+    #ptt_values = np.array(ptt_values)  
     estimated_dbp = a_dbp * ptt_values + b_dbp
     return estimated_dbp
 
@@ -331,6 +332,19 @@ def plot_estimated_blood_pressure_scatter(estimated_sbp, estimated_dbp, output_d
 
     print(f"Estimated blood pressure scatter graph saved at: {output_path}")
 
+def divide_and_calculate_means(data, num_groups=6):
+    # Assicurati che i dati possano essere divisi equamente nel numero specificato di gruppi
+    data_length = len(data)
+    group_size = data_length // num_groups
+    
+    means = []
+    for i in range(num_groups):
+        group_data = data[i * group_size:(i + 1) * group_size]
+        group_mean = np.mean(group_data)
+        means.append(group_mean)
+    
+    return means
+
 def segment_signal(signal, window_length_sec, fps):
     """
     Segmenta il segnale in finestre di una lunghezza specifica in secondi.
@@ -347,10 +361,14 @@ def segment_signal(signal, window_length_sec, fps):
 def main():
     
     # Path Subject and Task
-    dataset_folder = "/Volumes/DanoUSB/"
-    subject = "F001"
-    task = "T1"
-    gender = "female"
+    #dataset_folder = "/Volumes/DanoUSB/"
+    #subject = "F001"
+    #task = "T1"
+    dataset_folder = "/Users/danillugli/Desktop/Boccignone/BP4D+"
+    subject = "M001"
+    task = "T3/"
+    gender = "female" if subject[0] == "F" else "male" if subject[0] == "M" else "unknown"
+
     video_path = dataset_folder + f"/{subject}/{task}/vid.avi"
     # Output Path
     output_dir =  f"NIAC/{subject}/{task}"
@@ -371,7 +389,7 @@ def main():
     # Extract RGB Forehead signal
     print("\n1] Extracting RGB Forehead Signal")
     rgb_signals_forehead = extract_rgb_trace_MediaPipe(video_path, output_dir)
-    T_rgb_signals_forehead = np.vstack((rgb_signals_forehead['R'], rgb_signals_forehead['G'], rgb_signals_forehead['B'])).T
+    T_rgb_signal_forehead = np.vstack((rgb_signals_forehead['R'], rgb_signals_forehead['G'], rgb_signals_forehead['B'])).T
     #print(len(rgb_signals_forehead['R']))
     #print(rgb_signals_forehead['R'])
     print("RGB Forehead Signal Extracted\n")
@@ -393,23 +411,29 @@ def main():
     #Extract RGB Neck signal
     print("\n2]Extracting RGB Neck Signal")
     rgb_signal_neck = extract_rgb_trace(video_path, neck_roi, output_dir, "neck")
-    #T_rgb_signals_neck = np.vstack((rgb_signal_neck['R'], rgb_signal_neck['G'], rgb_signal_neck['B'])).T 
+    T_rgb_signals_neck = np.vstack((rgb_signal_neck['R'], rgb_signal_neck['G'], rgb_signal_neck['B'])).T 
     #print(rgb_signal_neck['R'])
     print("RGB Neck Signal Extracted.\n")
 
 
-    print("3]Filtering forehead Signal... \n")
+    print("3]Filtering Forehead Signal... \n")
     # Apply Smoothness Priors Detrend filter to forehead signal
     lambda_param = 10
-    filtered_rgb_signal_forehead = smoothness_priors_detrend(T_rgb_signals_forehead, lambda_param)
+    filtered_rgb_signal_forehead = smoothness_priors_detrend(T_rgb_signal_forehead, lambda_param)
+    #filtered_rgb_signal_forehead = {}
+    #for color in rgb_signals_forehead:
+    #    filtered_rgb_signal_forehead[color] = smoothness_priors_detrend(T_rgb_signal_forehead[color], lambda_param)
 
-    print("4]Filtering neck Signal... \n")
+    
+
+    print("4]Filtering Neck Signal... \n")
     # Apply Butterworth bandpass filter to neck signal
-    low_cutoff_frequency = 0.7
+    low_cutoff_frequency = 0.6
     high_cutoff_frequency = 4.0 
     filtered_rgb_signal_neck= {}
     for color in rgb_signal_neck:
         filtered_rgb_signal_neck[color] = butter_bandpass_filter(rgb_signal_neck[color], low_cutoff_frequency, high_cutoff_frequency, sampling_rate)
+    
     filtered_rgb_signal_neck = np.vstack((filtered_rgb_signal_neck['R'], filtered_rgb_signal_neck['G'], filtered_rgb_signal_neck['B'])).T 
 
 
@@ -431,14 +455,13 @@ def main():
     plt.savefig(f"{output_dir}/rgb_filtered_neck_R.jpg")
     plt.close()
 
-   
-    print("\n5]cpu_CHROM Applicatin\n\n")
+    print("5]cpu_CHROM Applicatin\n")
     #Get BVP_Signal_Forehead
     bvp_signal_forehead = cpu_CHROM(filtered_rgb_signal_forehead)
     #Get BBVP_Signal_Forehead
     bvp_signal_neck = cpu_CHROM(filtered_rgb_signal_neck)
 
-    print("Saving Forehead BVP Signal")
+    print("6] Saving Forehead BVP Signal")
     #Save BVP Signal Forehead
     np.savetxt(f"{output_dir}/bvp_signal_forehead.txt", bvp_signal_forehead)
     plt.plot(bvp_signal_forehead)
@@ -448,7 +471,7 @@ def main():
     plt.savefig(f"{output_dir}/bvp_signal_forehead.jpg")
     plt.close()
     
-    print("Saving Neck BVP Signal")
+    print("7] Saving Neck BVP Signal")
     #Save BVP Signal Neck
     np.savetxt(f"{output_dir}/bvp_signal_neck.txt", bvp_signal_neck)
     plt.plot(bvp_signal_neck)
@@ -466,15 +489,15 @@ def main():
     plot_peaks(bvp_signal_neck, neck_peaks, 'Neck PPG (R)', output_dir)
 
     # Calculate PTT
-    ptt = calculate_ptt(forehead_peaks, neck_peaks, sampling_rate, output_dir)
+    ptt = calculate_ptt(forehead_peaks, neck_peaks, 50, output_dir)
     print("PTT values (in seconds):", ptt)
 
     # Estimate SBP and DBP every 30 seconds
     estimated_sbp = estimate_systolic_blood_pressure(ptt, gender)
-    print("Estimated SBP values (mmHg) every 30 seconds:", estimated_sbp)
+    print("Estimated SBP values (mmHg): ", estimated_sbp)
 
     estimated_dbp = estimate_diastolic_blood_pressure(ptt, gender)
-    print("Estimated DBP values (mmHg) every 30 seconds:", estimated_dbp)
+    print("Estimated DBP values (mmHg): ", estimated_dbp)
 
     plot_estimated_blood_pressure_scatter(estimated_sbp, estimated_dbp, output_dir)
 
@@ -485,8 +508,27 @@ def main():
 
     #plot_estimated_blood_pressure_scatter(interpolated_sbp, interpolated_dbp, output_dir)
 
-    print(interpolated_dbp)
-    print(interpolated_sbp)
+    #print(interpolated_dbp)
+    #print(interpolated_sbp)
+    data_dbp = np.loadtxt('/Users/danillugli/Desktop/Boccignone/Project/NIAC/M001/T3/estimated_dbp.txt')
+    data_sbp = np.loadtxt('/Users/danillugli/Desktop/Boccignone/Project/NIAC/M001/T3/estimated_sbp.txt') 
+
+    dbp_media = divide_and_calculate_means(data_dbp)
+    sbp_media = divide_and_calculate_means(data_sbp)
+
+    plt.plot(dbp_media)
+    plt.title('DBP Media')
+    plt.xlabel('Frame')
+    plt.ylabel('DBP')
+    plt.savefig(f"{output_dir}/dbp_media.jpg")
+    plt.close()
+
+    plt.plot(sbp_media)
+    plt.title('SBP Media')
+    plt.xlabel('Frame')
+    plt.ylabel('SBP')
+    plt.savefig(f"{output_dir}/sbp_media.jpg")
+    plt.close()
 
     # Plot and save PTT values and estimated BP values
     plot_ptt_values(ptt, output_dir)
@@ -495,7 +537,7 @@ def main():
     save_estimated_bp(estimated_sbp, 'SBP', output_dir)
     save_estimated_bp(estimated_dbp, 'DBP', output_dir)
 
-    print("All processing steps completed successfully.")
+    print("\n\nAll processing steps completed successfully.")
 
 if __name__ == "__main__":
     main()
