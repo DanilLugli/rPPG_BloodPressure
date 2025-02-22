@@ -1,14 +1,33 @@
+# --- LIBRARY IMPORTS ---
 import json
+print("json imported successfully!")
+
 import os
+print("os imported successfully!")
+
 import numpy as np
+print("numpy imported successfully!")
+
 import mediapipe as mp
+print("mediapipe imported successfully!")
+
 import matplotlib.pyplot as plt
-from scipy.signal import butter, sosfiltfilt, find_peaks
+print("matplotlib imported successfully!")
+
+from scipy.signal import butter, sosfiltfilt, find_peaks, resample  # Aggiunto 'resample' per l'AIx
+print("scipy.signal imported successfully!")
+
 import scipy.sparse as sparse
+print("scipy.sparse imported successfully!")
+
 import scipy.sparse.linalg as splinalg
+print("scipy.sparse.linalg imported successfully!")
+
 import cv2
+print("opencv-python imported successfully!")
 
 print("Library imported successfully!")
+
 # Setup MediaPipe Face Mesh
 mp_face_mesh = mp.solutions.face_mesh
 face_mesh = mp_face_mesh.FaceMesh(
@@ -18,9 +37,53 @@ face_mesh = mp_face_mesh.FaceMesh(
     min_detection_confidence=0.5
 )
 
-# Indici dei landmark per la fronte (aggiornati per coprire tutta la fronte, l'ordine dei landmarks ha valore, bisogna seguire il perimetro)
+# Indici dei landmark per la fronte (aggiornati per coprire tutta la fronte)
 forehead_indices = [162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 293, 334, 296, 336, 9, 66, 105, 63, 70]
 
+# --- MANAGE VIDEO ---
+def get_sampling_rate(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video file: {video_path}")
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    return fps
+
+def segment_signal(signal, window_length_sec, fps):
+    """
+    Segmenta il segnale in finestre di una lunghezza specifica in secondi.
+
+    :param signal: Segnale da segmentare.
+    :param window_length_sec: Lunghezza della finestra in secondi.
+    :param fps: Frame per secondo del video.
+    :return: Lista di segmenti di segnale.
+    """
+    window_length = int(window_length_sec * fps)
+    segments = [signal[i:i + window_length] for i in range(0, len(signal), window_length)]
+    return segments
+
+# --- ROI SELECTION AND FILE MANAGEMENT ---
+def select_neck_roi(frame):
+    r = cv2.selectROI("Select Neck ROI", frame, fromCenter=False, showCrosshair=True)
+    cv2.destroyWindow("Select Neck ROI")
+    return r
+
+def save_roi_dimensions(roi, file_path):
+    roi_data = {
+        "x": roi[0],
+        "y": roi[1],
+        "width": roi[2],
+        "height": roi[3]
+    }
+    with open(file_path, 'w') as file:
+        json.dump(roi_data, file)
+
+def load_roi_dimensions(file_path):
+    with open(file_path, 'r') as file:
+        roi_data = json.load(file)
+    return (roi_data['x'], roi_data['y'], roi_data['width'], roi_data['height'])
+
+# --- FACE SIGNAL RGB EXTRACTION ---
 def get_face(image):
     """
     Funzione per elaborare l'immagine e restituire le coordinate dei landmark della fronte.
@@ -94,37 +157,14 @@ def extract_rgb_trace_MediaPipe(video_path, output_folder):
 
     return rgb_signals
 
-def select_neck_roi(frame):
-    r = cv2.selectROI("Select Neck ROI", frame, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Select Neck ROI")
-    return r
-
-def select_forehead_roi(frame):
-    r = cv2.selectROI("Select Forehead ROI", frame, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Select Forehead ROI")
-    return r
-
-def save_roi_dimensions(roi, file_path):
-    roi_data = {
-        "x": roi[0],
-        "y": roi[1],
-        "width": roi[2],
-        "height": roi[3]
-    }
-    with open(file_path, 'w') as file:
-        json.dump(roi_data, file)
-
-def load_roi_dimensions(file_path):
-    with open(file_path, 'r') as file:
-        roi_data = json.load(file)
-    return (roi_data['x'], roi_data['y'], roi_data['width'], roi_data['height'])
-
 def extract_rgb_trace(video_path, roi, output_folder, part):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video file: {video_path}")
+        raise RuntimeError(f"[ERROR] Cannot open video file: {video_path}")
 
     rgb_signals = {'R': [], 'G': [], 'B': []}
+
+    frame_count = 0  # ✅ Contiamo i frame per debug
 
     while cap.isOpened():
         success, image = cap.read()
@@ -132,59 +172,162 @@ def extract_rgb_trace(video_path, roi, output_folder, part):
             break
 
         x, y, w, h = roi
+
+        # ✅ Verifica se la ROI è dentro i limiti dell'immagine
+        if x + w > image.shape[1] or y + h > image.shape[0]:
+            print(f"[ERROR] ROI {roi} out of bounds! Image size: {image.shape}")
+            break
+
         roi_frame = image[y:y+h, x:x+w]
+
+        if roi_frame.size == 0:
+            print(f"[ERROR] Empty ROI frame at frame {frame_count}")
+            continue
+
         mean_val = cv2.mean(roi_frame)[:3]  # Extract mean values of the RGB channels
         rgb_signals['R'].append(mean_val[2])
         rgb_signals['G'].append(mean_val[1])
         rgb_signals['B'].append(mean_val[0])
 
-        # Optional: Draw the ROI on the frame for visualization
-        cv2.rectangle(image, (x, y), (x+w, y+h), (255, 0, 0), 2)
-        cv2.imshow('ROI', image)
-        if cv2.waitKey(5) & 0xFF == 27:  # 27 corresponds to the ESC key
-            break
+        frame_count += 1  # Incrementa il conteggio dei frame
 
     cap.release()
-    cv2.destroyAllWindows()
 
-    # Convert lists to numpy arrays
-    for color in rgb_signals:
-        rgb_signals[color] = np.array(rgb_signals[color])
+    if frame_count == 0:
+        print("[ERROR] No frames processed! Check video file or ROI.")
+        return {'R': [], 'G': [], 'B': []}
 
-    # Save raw RGB signals
-    for color in rgb_signals:
-        np.savetxt(f"{output_folder}/rgb_raw_{color}_Neck.txt", rgb_signals[color])
-        plt.plot(rgb_signals[color])
-        plt.title(f'RGB Signal (Raw - {color})')
-        plt.xlabel('Frame')
-        plt.ylabel('Intensity')
-        plt.savefig(f"{output_folder}/rgb_raw_{color}_Neck.jpg")
-        plt.close()
+    print(f"[INFO] Processed {frame_count} frames for {part}")
 
     return rgb_signals
 
+# --- NECK PPW EXTRACTION USING PIXFLOW ---
+def extract_pixflow_signal(video_path, roi, output_folder, part):
+    """
+    Extract PPW signal from neck using PixFlow algorithm.
+    Measures pixel displacements due to arterial pulsations in x direction.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video file: {video_path}")
+    ret, prev_frame = cap.read()
+    if not ret:
+        raise RuntimeError("Cannot read the first frame.")
+
+    x, y, w, h = roi
+    prev_gray = cv2.cvtColor(prev_frame[y:y+h, x:x+w], cv2.COLOR_BGR2GRAY)
+    flow_signal = []
+
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
+        curr_gray = cv2.cvtColor(frame[y:y+h, x:x+w], cv2.COLOR_BGR2GRAY)
+        # Compute optical flow
+        flow = cv2.calcOpticalFlowFarneback(prev_gray, curr_gray,
+                                            None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        # Average x displacement
+        avg_flow_x = np.mean(flow[..., 0])
+        flow_signal.append(avg_flow_x)
+        prev_gray = curr_gray
+
+    cap.release()
+
+    # Save the flow signal
+    flow_signal = np.array(flow_signal)
+    np.savetxt(f"{output_folder}/flow_signal_{part}.txt", flow_signal)
+    plt.plot(flow_signal)
+    plt.title(f'Flow Signal ({part})')
+    plt.xlabel('Frame')
+    plt.ylabel('Average Flow X')
+    plt.savefig(f"{output_folder}/flow_signal_{part}.jpg")
+    plt.close()
+
+    return flow_signal
+
+# --- SIGNAL PREPROCESSING AND CLEANING ---
 def smoothness_priors_detrend(signal, lambda_param=10):
     n = len(signal)
+    if n < 2:
+        print("[WARNING] Signal too short for detrending. Returning original signal.")
+        return signal
     I = sparse.eye(n)
     D = sparse.eye(n, n, 1) - sparse.eye(n, n)
-    D = D[1:]  # Elimina la prima riga di D per ottenere una matrice (n-1) x n
-
+    D = D[1:]
     H = I + lambda_param * D.T @ D
-    H = H.tocsc()  # Converti H in formato di matrice sparsa compressa per colonne per l'inversione
-
+    H = H.tocsc()
     trend = splinalg.spsolve(H, signal)
     detrended_signal = signal - trend
-
     return detrended_signal
 
 def butter_bandpass_filter(signal, lowcut, highcut, fs, order=4):
-    if len(signal) <= 27:  # Padlen for the filter is 27
-        print("Warning: The length of the input vector is too short for bandpass filtering. Skipping filtering.")
-        return signal  # Return the signal unfiltered
+    if len(signal) <= 27:
+        print("[WARNING] Signal too short for bandpass filtering. Returning original signal.")
+        return signal
     sos = butter(order, [lowcut, highcut], btype='band', output='sos', fs=fs)
-    filtered_signal = sosfiltfilt(sos, signal)
+    filtered_signal = sosfiltfilt(sos, signal, axis=0)
     return filtered_signal
 
+def validate_ptt(ptt_values):
+    lower_limit = 0.08  # Ridotto a 0.08s per non eliminare troppi valori validi
+    upper_limit = 0.4   # Aumentato per includere potenziali PTT più realistici
+
+    filtered_ptt = [ptt for ptt in ptt_values if lower_limit <= ptt <= upper_limit]
+    removed_outliers = len(ptt_values) - len(filtered_ptt)
+
+    print(f"[INFO] Removed {removed_outliers} outliers from PTT values.")
+    print(f"[INFO] Final valid PTT values: {filtered_ptt}")
+
+    return np.array(filtered_ptt)
+
+from scipy.stats import iqr
+from scipy.signal import find_peaks
+from scipy.stats import iqr
+import numpy as np
+
+def find_peaks_in_signal(ppg_signal, fps=30, window_size=5):
+    """
+    Migliorato il rilevamento dei picchi nel segnale PPG con:
+    - Adattamento della prominenza basato sulla deviazione standard del segnale
+    - Regolazione dinamica della distanza minima tra i picchi in base al frame rate (FPS)
+    - Filtro passa-basso con media mobile per ridurre il rumore
+    - Filtro IQR migliorato per ridurre gli outlier
+    
+    :param ppg_signal: Array con il segnale PPG
+    :param fps: Frame rate del video (default: 30 FPS)
+    :param window_size: Dimensione della finestra per il filtro passa-basso (default: 5)
+    :return: Indici dei picchi validi nel segnale
+    """
+
+    # 1️⃣ FILTRO PASSA-BASSO: Media mobile per ridurre il rumore
+    smoothed_signal = np.convolve(ppg_signal, np.ones(window_size)/window_size, mode='valid')
+
+    # 2️⃣ ADATTAMENTO AUTOMATICO DELLA PROMINENZA
+    prominence_value = 0.15 * np.std(smoothed_signal)
+
+    # 3️⃣ DISTANZA MINIMA TRA I PICCHI IN BASE ALLA FREQUENZA CARDIACA
+    # Supponiamo un range realistico di 50-120 BPM → convertiamo in intervalli tra picchi
+    min_bpm = 50
+    max_bpm = 120
+    min_distance = int(fps * 60 / max_bpm)  # Minima distanza in frame (per 120 BPM)
+    max_distance = int(fps * 60 / min_bpm)  # Massima distanza in frame (per 50 BPM)
+
+    peaks, properties = find_peaks(smoothed_signal, distance=min_distance, prominence=prominence_value)
+
+    # 4️⃣ FILTRO OUTLIER USANDO IQR
+    peak_heights = smoothed_signal[peaks]
+    q1, q3 = np.percentile(peak_heights, [25, 75])
+    iqr_value = iqr(peak_heights)
+    lower_bound = q1 - 1.5 * iqr_value
+    upper_bound = q3 + 1.5 * iqr_value
+
+    valid_peaks = peaks[(peak_heights >= lower_bound) & (peak_heights <= upper_bound)]
+
+    print(f"[INFO] Rilevati {len(peaks)} picchi iniziali, ridotti a {len(valid_peaks)} dopo il filtro IQR.")
+    
+    return valid_peaks
+
+# --- FEATURE EXTRACTION FROM CLEANED SIGNAL ---
 def cpu_CHROM(signal):
     """
     CHROM method on CPU using Numpy.
@@ -201,54 +344,165 @@ def cpu_CHROM(signal):
     bvp = Xcomp - alpha * Ycomp
     return bvp
 
-def plot_ppg_signal(ppg_signal, label, output_dir):
-    plt.figure(figsize=(10, 4))
-    plt.plot(ppg_signal, label=label)
-    plt.xlabel('Frame')
-    plt.ylabel('Mean Intensity')
-    plt.title(f'{label} Signal')
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, f'{label}_signal.png'))
-    plt.close()
+def cpu_POS(signal):
+    """
+    Implement the Plane Orthogonal to Skin (POS) algorithm.
+    """
+    # Remove DC component
+    mean_rgb = np.mean(signal, axis=0)
+    S = signal - mean_rgb  # S ha dimensione (N, 2) perché usiamo solo R e G
 
-def find_peaks_in_signal(ppg_signal):
-    peaks, _ = find_peaks(ppg_signal, distance=20)
-    return peaks
+    # Proiezione corretta (2x2 invece di 2x3)
+    H = np.array([[1, -1],  
+                  [1, 1]])
 
-def plot_peaks(ppg_signal, peaks, label, output_dir):
-    plt.figure(figsize=(10, 4))
-    plt.plot(ppg_signal, label=label)
-    plt.plot(peaks, np.array(ppg_signal)[peaks], "x", label='Peaks')
-    plt.xlabel('Frame')
-    plt.ylabel('Mean Intensity')
-    plt.title(f'{label} with Peaks')
-    plt.legend()
-    plt.savefig(os.path.join(output_dir, f'{label}_peaks.png'))
-    plt.close()
+    # Applica la proiezione
+    Xs = H @ S.T  # Ora H (2,2) e S.T (2,N) → Nessun errore
+    S1 = Xs[0, :]
+    S2 = Xs[1, :]
+
+    alpha = np.std(S1) / np.std(S2)
+    bvp = S1 - alpha * S2
+    return bvp
+
+from scipy.interpolate import interp1d
+import numpy as np
+
 
 def calculate_ptt(peaks_forehead, peaks_neck, fps, output_dir):
-    peaks_forehead = np.array(peaks_forehead)
-    peaks_neck = np.array(peaks_neck)
-    t_ppg = peaks_forehead / fps
-    t_ppw = peaks_neck / fps
+    """
+    Calcola il Pulse Transit Time (PTT) basandosi sui picchi rilevati nei segnali della fronte e del collo.
+    
+    - Ottimizza il matching scegliendo il picco più vicino invece del primo successivo.
+    - Filtra automaticamente i PTT fuori dai range fisiologici (0.1s - 0.4s).
+    - Evita problemi causati da picchi spuri o errati.
+    
+    :param peaks_forehead: Indici dei picchi rilevati nel segnale della fronte.
+    :param peaks_neck: Indici dei picchi rilevati nel segnale del collo.
+    :param fps: Frame rate del video per la conversione dei tempi.
+    :param output_dir: Directory di output per salvare i risultati.
+    :return: Array dei valori PTT calcolati.
+    """
+    
+    # Convertiamo gli indici dei picchi in tempo (secondi)
+    peaks_forehead = np.array(peaks_forehead) / fps
+    peaks_neck = np.array(peaks_neck) / fps
+
+    print(f"[DEBUG] Peaks Forehead (time): {peaks_forehead}")
+    print(f"[DEBUG] Peaks Neck (time): {peaks_neck}")
+
+    # Se non ci sono picchi in uno dei due segnali, restituiamo un array vuoto
+    if len(peaks_forehead) == 0 or len(peaks_neck) == 0:
+        print("[ERROR] No peaks detected in one of the signals!")
+        return np.array([])
+
     ptt_values = []
-    for t_f in t_ppg:
-        t_n = t_ppw[np.argmin(np.abs(t_ppw - t_f))]
-        ptt_values.append(t_f - t_n)
+    for t_n in peaks_neck:
+        t_f_candidates = peaks_forehead[peaks_forehead > t_n]
+
+        if len(t_f_candidates) > 0:
+            # ✅ Trova il picco della fronte più vicino a quello del collo
+            t_f = min(t_f_candidates, key=lambda t: abs(t - t_n))
+
+            # ✅ Calcolo PTT (differenza tra i due picchi)
+            ptt_value = t_f - t_n
+
+            # ✅ Filtraggio PTT per valori fisiologici (0.1s - 0.4s)
+            if 0.1 <= ptt_value <= 0.4:
+                ptt_values.append(ptt_value)
+            else:
+                print(f"[WARNING] PTT={ptt_value:.3f}s fuori range fisiologico!")
+
+    # Convertiamo in numpy array per facilitarne la gestione
     ptt_values = np.array(ptt_values)
+
+    # ✅ Debugging: Stampiamo la media e la deviazione standard dei PTT
+    if len(ptt_values) > 0:
+        print(f"[INFO] PTT Mean: {np.mean(ptt_values):.3f}s, Std Dev: {np.std(ptt_values):.3f}s")
+    
+    # ✅ Salvataggio dei valori PTT in un file di testo
     np.savetxt(os.path.join(output_dir, 'ptt_values.txt'), ptt_values, fmt='%.5f')
+
+    print(f"[DEBUG] Computed PTT values: {ptt_values}")  
+
     return ptt_values
 
-def plot_ptt_values(ptt_values, output_dir):
+def calculate_aix(bvp_forehead, bvp_neck, peaks_forehead, peaks_neck, fs, output_dir):
+    """
+    Calcola l'Augmentation Index (AIx) utilizzando i segnali BVP della fronte e del collo.
+
+    :param bvp_forehead: Segnale BVP estratto dalla fronte.
+    :param bvp_neck: Segnale BVP estratto dal collo.
+    :param peaks_forehead: Indici dei picchi nel segnale BVP della fronte.
+    :param peaks_neck: Indici dei picchi nel segnale BVP del collo.
+    :param fs: Frequenza di campionamento.
+    :param output_dir: Directory in cui salvare i risultati.
+    :return: Array di valori AIx.
+    """
+    aix_values = []
+
+    # Assicurati che i segnali abbiano la stessa lunghezza
+    min_length = min(len(bvp_forehead), len(bvp_neck))
+    bvp_forehead = bvp_forehead[:min_length]
+    bvp_neck = bvp_neck[:min_length]
+
+    # Allinea i segnali utilizzando l'interpolazione se necessario
+    if len(bvp_forehead) != len(bvp_neck):
+        bvp_neck = resample(bvp_neck, len(bvp_forehead))
+
+    for i in range(len(peaks_forehead)-1):
+        # Estrai il battito dalla fronte
+        start_idx = peaks_forehead[i]
+        end_idx = peaks_forehead[i+1]
+        beat_forehead = bvp_forehead[start_idx:end_idx]
+
+        # Trova il picco sistolico (P1) e la pressione diastolica (P_diastolica)
+        P1 = np.max(beat_forehead)
+        P_diastolic = np.min(beat_forehead)
+
+        # Estrai il battito corrispondente dal collo
+        # Trova il picco nel collo che si verifica tra start_idx e end_idx
+        neck_peaks_in_beat = peaks_neck[(peaks_neck >= start_idx) & (peaks_neck < end_idx)]
+        if len(neck_peaks_in_beat) == 0:
+            continue  # Nessun picco nel collo corrispondente
+        P2_idx = neck_peaks_in_beat[0]
+        P2 = bvp_neck[P2_idx]
+
+        # Calcola PP (Pulse Pressure) usando le ampiezze relative
+        PP = P1 - P_diastolic
+
+        # Calcola AIx
+        if PP != 0:
+            AIx = ((P2 - P1) / PP) * 100
+            aix_values.append(AIx)
+
+    aix_values = np.array(aix_values)
+    np.savetxt(os.path.join(output_dir, 'aix_values.txt'), aix_values, fmt='%.2f')
+
+    # Plot dei valori di AIx
     plt.figure(figsize=(10, 4))
-    plt.plot(ptt_values, label='PTT Values')
-    plt.xlabel('Measurement Index')
-    plt.ylabel('PTT (seconds)')
-    plt.title('PTT Values Over Time')
+    plt.plot(aix_values, label='AIx Values')
+    plt.xlabel('Beat Index')
+    plt.ylabel('AIx (%)')
+    plt.title('Augmentation Index Over Time')
     plt.legend()
-    plt.savefig(os.path.join(output_dir, 'ptt_values.png'))
+    plt.savefig(os.path.join(output_dir, 'aix_values.png'))
     plt.close()
 
+    print(f"[INFO] AIx values calculated and saved: {aix_values}")
+
+    return aix_values
+
+def moving_average(data, window_size):
+    return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
+
+def interpolate_to_length(values, target_length):
+    x = np.linspace(0, len(values) - 1, len(values))
+    x_new = np.linspace(0, len(values) - 1, target_length)
+    interpolated_values = np.interp(x_new, x, values)
+    return interpolated_values
+
+# --- BLOOD PRESSURE ESTIMATION ---
 def estimate_systolic_blood_pressure(ptt_values, gender):
     if gender == 'male':
         a_sbp = -100  # Coefficiente per la stima della SBP negli uomini
@@ -258,8 +512,7 @@ def estimate_systolic_blood_pressure(ptt_values, gender):
         b_sbp = 110   # Intercetta per la stima della SBP nelle donne
     else:
         raise ValueError("Gender not recognized. Please specify 'male' or 'female'.")
-
-    #ptt_values = np.array(ptt_values)  
+    ptt_values = np.array(ptt_values)  
     estimated_sbp = a_sbp * ptt_values + b_sbp
     return estimated_sbp
 
@@ -272,9 +525,41 @@ def estimate_diastolic_blood_pressure(ptt_values, gender):
         b_dbp = 75    # Intercetta per la stima della DBP nelle donne
     else:
         raise ValueError("Gender not recognized. Please specify 'male' or 'female'.")
-    #ptt_values = np.array(ptt_values)  
+    ptt_values = np.array(ptt_values)  
     estimated_dbp = a_dbp * ptt_values + b_dbp
     return estimated_dbp
+
+# --- DATA VISUALIZATION AND SAVING ---
+def plot_ppg_signal(ppg_signal, label, output_dir):
+    plt.figure(figsize=(10, 4))
+    plt.plot(ppg_signal, label=label)
+    plt.xlabel('Frame')
+    plt.ylabel('Signal Amplitude')
+    plt.title(f'{label} Signal')
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, f'{label}_signal.png'))
+    plt.close()
+
+def plot_peaks(ppg_signal, peaks, label, output_dir):
+    plt.figure(figsize=(10, 4))
+    plt.plot(ppg_signal, label=label)
+    plt.plot(peaks, np.array(ppg_signal)[peaks], "x", label='Peaks')
+    plt.xlabel('Frame')
+    plt.ylabel('Signal Amplitude')
+    plt.title(f'{label} with Peaks')
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, f'{label}_peaks.png'))
+    plt.close()
+
+def plot_ptt_values(ptt_values, output_dir):
+    plt.figure(figsize=(10, 4))
+    plt.plot(ptt_values, label='PTT Values')
+    plt.xlabel('Measurement Index')
+    plt.ylabel('PTT (seconds)')
+    plt.title('PTT Values Over Time')
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, 'ptt_values.png'))
+    plt.close()
 
 def plot_estimated_bp(bp_values, label, output_dir):
     plt.figure(figsize=(10, 4))
@@ -285,26 +570,6 @@ def plot_estimated_bp(bp_values, label, output_dir):
     plt.legend()
     plt.savefig(os.path.join(output_dir, f'estimated_{label.lower()}.png'))
     plt.close()
-
-def save_estimated_bp(bp_values, label, output_dir):
-    np.savetxt(os.path.join(output_dir, f'estimated_{label.lower()}.txt'), bp_values, fmt='%.2f')
-
-def moving_average(data, window_size):
-    return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
-
-def interpolate_to_length(values, target_length):
-    x = np.linspace(0, len(values) - 1, len(values))
-    x_new = np.linspace(0, len(values) - 1, target_length)
-    interpolated_values = np.interp(x_new, x, values)
-    return interpolated_values
-    
-def get_sampling_rate(video_path):
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video file: {video_path}")
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    cap.release()
-    return fps
 
 def plot_estimated_blood_pressure_scatter(estimated_sbp, estimated_dbp, output_dir):
     """
@@ -332,212 +597,199 @@ def plot_estimated_blood_pressure_scatter(estimated_sbp, estimated_dbp, output_d
 
     print(f"Estimated blood pressure scatter graph saved at: {output_path}")
 
-def divide_and_calculate_means(data, num_groups=6):
-    # Assicurati che i dati possano essere divisi equamente nel numero specificato di gruppi
-    data_length = len(data)
-    group_size = data_length // num_groups
-    
-    means = []
-    for i in range(num_groups):
-        group_data = data[i * group_size:(i + 1) * group_size]
-        group_mean = np.mean(group_data)
-        means.append(group_mean)
-    
-    return means
+def save_estimated_bp(bp_values, label, output_dir):
+    np.savetxt(os.path.join(output_dir, f'estimated_{label.lower()}.txt'), bp_values, fmt='%.2f')
 
-def segment_signal(signal, window_length_sec, fps):
-    """
-    Segmenta il segnale in finestre di una lunghezza specifica in secondi.
-
-    :param signal: Segnale da segmentare.
-    :param window_length_sec: Lunghezza della finestra in secondi.
-    :param fps: Frame per secondo del video.
-    :return: Lista di segmenti di segnale.
-    """
-    window_length = int(window_length_sec * fps)
-    segments = [signal[i:i + window_length] for i in range(0, len(signal), window_length)]
-    return segments
-
-def main():
-    
-    # Path Subject and Task
-    #dataset_folder = "/Volumes/DanoUSB/"
-    #subject = "F001"
-    #task = "T1"
-    dataset_folder = "/Users/danillugli/Desktop/Boccignone/BP4D+"
+# --- MAIN --- 
+def initialize_paths_and_config():
+    print("\n[INFO] Initializing paths and configurations...")
+    dataset_folder = "/Volumes/DanoUSB"
     subject = "M001"
-    task = "T3/"
-    gender = "female" if subject[0] == "F" else "male" if subject[0] == "M" else "unknown"
-
-    video_path = dataset_folder + f"/{subject}/{task}/vid.avi"
-    # Output Path
-    output_dir =  f"NIAC/{subject}/{task}"
+    task = "T3"
+    gender = "male"
+    video_path = f"{dataset_folder}/{subject}/{task}/vid.avi"
+    output_dir = f"NIAC/{subject}/{task}"
+    neck_roi_file_path = f"{output_dir}/neck_roi_dimensions.json"
     os.makedirs(output_dir, exist_ok=True)
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        print(f"\nFolder \"{output_dir}\" has been created.")
+    print(f"[INFO] Output directory: {output_dir}")
+    return video_path, output_dir, neck_roi_file_path, gender
 
-    print(f"\n<-- START - Subject: {subject} - Task: {task} -->\n")
-
-    # Path ROI Forehead + Neck
-    neck_roi_file_path = f"NIAC/{subject}/{task}neck_roi_dimensions.json"
-    #forehead_roi_file_path = f"NIAC/{subject}/{task}forehead_roi_dimensions.json"
-
-    sampling_rate = get_sampling_rate(video_path)
-    print(f"Sampling rate: {sampling_rate} FPS\n")
-
-    # Extract RGB Forehead signal
-    print("\n1] Extracting RGB Forehead Signal")
-    rgb_signals_forehead = extract_rgb_trace_MediaPipe(video_path, output_dir)
-    T_rgb_signal_forehead = np.vstack((rgb_signals_forehead['R'], rgb_signals_forehead['G'], rgb_signals_forehead['B'])).T
-    #print(len(rgb_signals_forehead['R']))
-    #print(rgb_signals_forehead['R'])
-    print("RGB Forehead Signal Extracted\n")
-
+def calculate_roi(video_path, neck_roi_file_path):
+    print("\n[STEP 1] Calculating ROI...")
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video file: {video_path}")
     ret, frame = cap.read()
+    cap.release()
     if not ret:
-        print("Error: Could not read frame.")
-        return
+        print("[ERROR] Could not read frame from video.")
+        return None
 
     if os.path.exists(neck_roi_file_path):
         neck_roi = load_roi_dimensions(neck_roi_file_path)
+        print("[INFO] Neck ROI loaded from file.")
     else:
+        print("[INFO] Select neck ROI manually.")
         neck_roi = select_neck_roi(frame)
         save_roi_dimensions(neck_roi, neck_roi_file_path)
+        print("[INFO] Neck ROI saved to file.")
+    return neck_roi
 
-    #Extract RGB Neck signal
-    print("\n2]Extracting RGB Neck Signal")
-    rgb_signal_neck = extract_rgb_trace(video_path, neck_roi, output_dir, "neck")
-    T_rgb_signals_neck = np.vstack((rgb_signal_neck['R'], rgb_signal_neck['G'], rgb_signal_neck['B'])).T 
-    #print(rgb_signal_neck['R'])
-    print("RGB Neck Signal Extracted.\n")
+def process_ppg_forehead(video_path, output_dir):
+    print("\n[STEP 2] Processing forehead PPG...")
+    rgb_signals = extract_rgb_trace_MediaPipe(video_path, output_dir)
+    signals = np.vstack((rgb_signals['R'], rgb_signals['G'], rgb_signals['B'])).T
+    print("[INFO] RGB signal from forehead extracted successfully.")
+    if signals.shape[0] < 28:
+        needed = 28 - signals.shape[0]
+        last_samples = signals[-1:].repeat(needed, axis=0)
+        signals = np.vstack((signals, last_samples))
+        print(f"[WARNING] Forehead signal had less than 28 samples. Extended to {signals.shape[0]} samples.")
+    return signals
 
+def process_ppg_neck(video_path, neck_roi, output_dir):
+    print("\n[STEP 3] Processing neck PPG...")
 
-    print("3]Filtering Forehead Signal... \n")
-    # Apply Smoothness Priors Detrend filter to forehead signal
-    lambda_param = 10
-    filtered_rgb_signal_forehead = smoothness_priors_detrend(T_rgb_signal_forehead, lambda_param)
-    #filtered_rgb_signal_forehead = {}
-    #for color in rgb_signals_forehead:
-    #    filtered_rgb_signal_forehead[color] = smoothness_priors_detrend(T_rgb_signal_forehead[color], lambda_param)
-
+    # ✅ Controllo validità ROI
+    if neck_roi is None or len(neck_roi) != 4:
+        print("[ERROR] Invalid Neck ROI. Check ROI selection.")
+        return None
     
+    x, y, w, h = neck_roi
+    if w <= 0 or h <= 0:
+        print(f"[ERROR] Invalid ROI dimensions: {neck_roi}")
+        return None
 
-    print("4]Filtering Neck Signal... \n")
-    # Apply Butterworth bandpass filter to neck signal
-    low_cutoff_frequency = 0.6
-    high_cutoff_frequency = 4.0 
-    filtered_rgb_signal_neck= {}
-    for color in rgb_signal_neck:
-        filtered_rgb_signal_neck[color] = butter_bandpass_filter(rgb_signal_neck[color], low_cutoff_frequency, high_cutoff_frequency, sampling_rate)
-    
-    filtered_rgb_signal_neck = np.vstack((filtered_rgb_signal_neck['R'], filtered_rgb_signal_neck['G'], filtered_rgb_signal_neck['B'])).T 
+    print(f"[INFO] Using Neck ROI: x={x}, y={y}, w={w}, h={h}")
 
+    # ✅ Debug: Prova a caricare un singolo frame prima di processare tutto il video
+    cap = cv2.VideoCapture(video_path)
+    ret, image = cap.read()
+    if not ret:
+        print("[ERROR] Could not read the first frame of the video.")
+        return None
+    cap.release()
 
-    # Save filtered rgb signals for forehead
-    np.savetxt(f"{output_dir}/rgb_filtered_forehead_R.txt", filtered_rgb_signal_forehead)
-    plt.plot(filtered_rgb_signal_forehead)
-    plt.title('RGB Signal (Filtered - Forehead - R)')
-    plt.xlabel('Frame')
-    plt.ylabel('Intensity')
-    plt.savefig(f"{output_dir}/rgb_filtered_forehead_R.jpg")
-    plt.close()
+    print("[INFO] First frame read successfully.")
 
-    # Save filtered rgb signals for neck
-    np.savetxt(f"{output_dir}/rgb_filtered_neck_R.txt", filtered_rgb_signal_neck)
-    plt.plot(filtered_rgb_signal_neck)
-    plt.title('RGB Signal (Filtered - Neck - R)')
-    plt.xlabel('Frame')
-    plt.ylabel('Intensity')
-    plt.savefig(f"{output_dir}/rgb_filtered_neck_R.jpg")
-    plt.close()
+    rgb_signals = extract_rgb_trace(video_path, neck_roi, output_dir, "Neck")
 
-    print("5]cpu_CHROM Applicatin\n")
-    #Get BVP_Signal_Forehead
-    bvp_signal_forehead = cpu_CHROM(filtered_rgb_signal_forehead)
-    #Get BBVP_Signal_Forehead
-    bvp_signal_neck = cpu_CHROM(filtered_rgb_signal_neck)
+    print("[DEBUG] Extracted RGB signals for Neck")
 
-    print("6] Saving Forehead BVP Signal")
-    #Save BVP Signal Forehead
-    np.savetxt(f"{output_dir}/bvp_signal_forehead.txt", bvp_signal_forehead)
-    plt.plot(bvp_signal_forehead)
-    plt.title('BVP Signal_Forehead')
-    plt.xlabel('Frame')
-    plt.ylabel('Intensity')
-    plt.savefig(f"{output_dir}/bvp_signal_forehead.jpg")
-    plt.close()
-    
-    print("7] Saving Neck BVP Signal")
-    #Save BVP Signal Neck
-    np.savetxt(f"{output_dir}/bvp_signal_neck.txt", bvp_signal_neck)
-    plt.plot(bvp_signal_neck)
-    plt.title('BVP Signal_Neck')
-    plt.xlabel('Frame')
-    plt.ylabel('Intensity')
-    plt.savefig(f"{output_dir}/bvp_signal_neck.jpg")
-    plt.close()
+    # ✅ Debug: Verifica se abbiamo dati validi
+    if len(rgb_signals['R']) == 0 or len(rgb_signals['G']) == 0:
+        print("[ERROR] No valid RGB data extracted from Neck.")
+        return None
 
-    # Find and plot peaks in the filtered red signals
-    forehead_peaks = find_peaks_in_signal(bvp_signal_forehead)
-    neck_peaks = find_peaks_in_signal(bvp_signal_neck)
+    red_signal = np.array(rgb_signals['R'])
+    green_signal = np.array(rgb_signals['G'])
 
-    plot_peaks(bvp_signal_forehead, forehead_peaks, 'Forehead PPG (R)', output_dir)
-    plot_peaks(bvp_signal_neck, neck_peaks, 'Neck PPG (R)', output_dir)
+    print(f"[DEBUG] Red signal shape: {red_signal.shape}, Green signal shape: {green_signal.shape}")
 
-    # Calculate PTT
-    ptt = calculate_ptt(forehead_peaks, neck_peaks, 50, output_dir)
-    print("PTT values (in seconds):", ptt)
+    # ✅ Debug: Controllo su eventuali dati anomali
+    if red_signal.shape[0] < 5 or green_signal.shape[0] < 5:
+        print(f"[ERROR] Signals are too short! Red: {red_signal.shape[0]}, Green: {green_signal.shape[0]}")
+        return None
 
-    # Estimate SBP and DBP every 30 seconds
-    estimated_sbp = estimate_systolic_blood_pressure(ptt, gender)
-    print("Estimated SBP values (mmHg): ", estimated_sbp)
+    # Compute the mean of Red and Green signals
+    mean_rg_signal = np.vstack((red_signal, green_signal)).T  # Combine R and G into a 2D array
 
-    estimated_dbp = estimate_diastolic_blood_pressure(ptt, gender)
-    print("Estimated DBP values (mmHg): ", estimated_dbp)
+    print(f"[DEBUG] Mean R+G signal shape: {mean_rg_signal.shape}")
 
-    plot_estimated_blood_pressure_scatter(estimated_sbp, estimated_dbp, output_dir)
+    if mean_rg_signal.shape[0] < 28:
+        needed = 28 - mean_rg_signal.shape[0]
+        last_samples = mean_rg_signal[-1:].repeat(needed, axis=0)
+        mean_rg_signal = np.vstack((mean_rg_signal, last_samples))
+        print(f"[WARNING] Neck signal had less than 28 samples. Extended to {mean_rg_signal.shape[0]} samples.")
 
-    # Interpolate DBP values to match the length of the reference file
-    target_length = 1000  # Replace with the desired length
-    interpolated_dbp = interpolate_to_length(estimated_dbp, target_length)
-    interpolated_sbp = interpolate_to_length(estimated_sbp, target_length)
+    return mean_rg_signal
 
-    #plot_estimated_blood_pressure_scatter(interpolated_sbp, interpolated_dbp, output_dir)
+def calculate_ppw_neck(video_path, neck_roi, output_dir):
+    print("\n[STEP 4] Calculating neck PPW...")
+    ppw_signal = extract_pixflow_signal(video_path, neck_roi, output_dir, "Neck")
+    print("[INFO] Neck PPW signal extracted successfully.")
+    return ppw_signal
 
-    #print(interpolated_dbp)
-    #print(interpolated_sbp)
-    data_dbp = np.loadtxt('/Users/danillugli/Desktop/Boccignone/Project/NIAC/M001/T3/estimated_dbp.txt')
-    data_sbp = np.loadtxt('/Users/danillugli/Desktop/Boccignone/Project/NIAC/M001/T3/estimated_sbp.txt') 
+def preprocess_and_filter_signals(signals, sampling_rate):
+    detrended_signals = smoothness_priors_detrend(signals, lambda_param=10)
+    filtered_signals = butter_bandpass_filter(
+        detrended_signals,
+        lowcut=0.7,
+        highcut=4.0,
+        fs=sampling_rate
+    )
+    return filtered_signals
 
-    dbp_media = divide_and_calculate_means(data_dbp)
-    sbp_media = divide_and_calculate_means(data_sbp)
-
-    plt.plot(dbp_media)
-    plt.title('DBP Media')
-    plt.xlabel('Frame')
-    plt.ylabel('DBP')
-    plt.savefig(f"{output_dir}/dbp_media.jpg")
-    plt.close()
-
-    plt.plot(sbp_media)
-    plt.title('SBP Media')
-    plt.xlabel('Frame')
-    plt.ylabel('SBP')
-    plt.savefig(f"{output_dir}/sbp_media.jpg")
-    plt.close()
-
-    # Plot and save PTT values and estimated BP values
+def save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, ptt, estimated_sbp, estimated_dbp, output_dir):
+    """
+    Salva e visualizza i risultati delle elaborazioni.
+    """
+    print("\n[INFO] Saving and visualizing results...")
+    plot_peaks(bvp_forehead, forehead_peaks, 'Forehead PPG (CHROM)', output_dir)
+    plot_peaks(bvp_neck, neck_peaks, 'Neck PPG (CHROM)', output_dir)
     plot_ptt_values(ptt, output_dir)
     plot_estimated_bp(estimated_sbp, 'SBP', output_dir)
-    plot_estimated_bp(interpolated_dbp, 'DBP', output_dir)
+    plot_estimated_bp(estimated_dbp, 'DBP', output_dir)
     save_estimated_bp(estimated_sbp, 'SBP', output_dir)
     save_estimated_bp(estimated_dbp, 'DBP', output_dir)
+    print("[INFO] Results saved and visualized successfully.")
 
-    print("\n\nAll processing steps completed successfully.")
+def main():
+    # Step 0: Initialize paths and configurations
+    video_path, output_dir, neck_roi_file_path, gender = initialize_paths_and_config()
+    sampling_rate = get_sampling_rate(video_path)
+    print(f"[INFO] Sampling rate: {sampling_rate} FPS\n")
+
+    # Step 1: Calculate ROI
+    neck_roi = calculate_roi(video_path, neck_roi_file_path)
+    if neck_roi is None:
+        return
+
+    # Step 2: Process forehead PPG
+    T_rgb_signals_forehead = process_ppg_forehead(video_path, output_dir)
+
+    # Step 3: Process neck PPG
+    T_mean_signals_neck = process_ppg_neck(video_path, neck_roi, output_dir)
+
+
+    # Step 4: Calculate neck PPW
+    calculate_ppw_neck(video_path, neck_roi, output_dir)
+
+     # Step 5: Preprocess and filter signals
+    filtered_forehead = preprocess_and_filter_signals(T_rgb_signals_forehead, sampling_rate)
+    filtered_neck = preprocess_and_filter_signals(T_mean_signals_neck, sampling_rate)
+
+    # Step 6: Extract BVP
+    print("\n[STEP 6] Extracting BVP...")
+    bvp_forehead = cpu_CHROM(filtered_forehead)  # CHROM for forehead
+    bvp_neck = cpu_POS(filtered_neck)  # POS for neck
+    print("[INFO] BVP signals extracted successfully.")
+
+    # Step 7: Detect peaks and calculate AIx
+    print("\n[STEP 7] Detecting peaks and calculating AIx...")
+    forehead_peaks = find_peaks_in_signal(bvp_forehead, fps=sampling_rate)
+    neck_peaks = find_peaks_in_signal(bvp_neck, fps=sampling_rate)
+    calculate_aix(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, sampling_rate, output_dir)
+
+
+    # Step 8: Calculate PTT
+    print("\n[STEP 8] Calculating PTT...")
+    raw_ptt = calculate_ptt(forehead_peaks, neck_peaks, sampling_rate, output_dir)
+    ptt = validate_ptt(raw_ptt)
+    print(f"[INFO] Filtered PTT values: {ptt}")
+
+    # Step 9: Estimate Blood Pressure
+    print("\n[STEP 9] Estimating Blood Pressure...")
+    estimated_sbp = estimate_systolic_blood_pressure(ptt, gender)
+    estimated_dbp = estimate_diastolic_blood_pressure(ptt, gender)
+    print(f"[INFO] Estimated SBP: {estimated_sbp}")
+    print(f"[INFO] Estimated DBP: {estimated_dbp}")
+
+    # Step 10: Save and visualize results
+    save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, ptt, estimated_sbp, estimated_dbp, output_dir)
+
+    # Final message
+    print("\n[INFO] All processing steps completed successfully.")
 
 if __name__ == "__main__":
     main()
