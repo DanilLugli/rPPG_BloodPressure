@@ -62,6 +62,18 @@ def segment_signal(signal, window_length_sec, fps):
     segments = [signal[i:i + window_length] for i in range(0, len(signal), window_length)]
     return segments
 
+def read_blood_pressure_data(file_path):
+    """
+    Legge i valori di pressione sanguigna da un file di testo.
+    """
+    if not os.path.exists(file_path):
+        print(f"[ERROR] File non trovato: {file_path}")
+        return np.array([])
+    
+    with open(file_path, 'r') as file:
+        lines = file.readlines()
+        bp_data = np.array([float(line.strip()) for line in lines])
+    return bp_data
 # --- ROI SELECTION AND FILE MANAGEMENT ---
 def select_neck_roi(frame):
     r = cv2.selectROI("Select Neck ROI", frame, fromCenter=False, showCrosshair=True)
@@ -368,7 +380,6 @@ def cpu_POS(signal):
 from scipy.interpolate import interp1d
 import numpy as np
 
-
 def calculate_ptt(peaks_forehead, peaks_neck, fps, output_dir):
     """
     Calcola il Pulse Transit Time (PTT) basandosi sui picchi rilevati nei segnali della fronte e del collo.
@@ -493,6 +504,31 @@ def calculate_aix(bvp_forehead, bvp_neck, peaks_forehead, peaks_neck, fs, output
 
     return aix_values
 
+def calculate_ptt_ppg_forehead_neck(peaks_forehead, peaks_neck_ppg, fps, output_dir):
+    """
+    Calcola il Pulse Transit Time (PTT) tra il PPG della fronte e il PPG del collo.
+    """
+    peaks_forehead = np.array(peaks_forehead) / fps
+    peaks_neck_ppg = np.array(peaks_neck_ppg) / fps
+
+    if len(peaks_forehead) == 0 or len(peaks_neck_ppg) == 0:
+        print("[ERROR] No peaks detected in one of the signals!")
+        return np.array([])
+
+    ptt_values = []
+    for t_n in peaks_neck_ppg:
+        t_f_candidates = peaks_forehead[peaks_forehead > t_n]
+
+        if len(t_f_candidates) > 0:
+            t_f = min(t_f_candidates, key=lambda t: abs(t - t_n))
+            ptt_value = t_f - t_n
+            if 0.1 <= ptt_value <= 0.4:
+                ptt_values.append(ptt_value)
+
+    ptt_values = np.array(ptt_values)
+    np.savetxt(os.path.join(output_dir, 'ptt_values_PPG_PPG.txt'), ptt_values, fmt='%.5f')
+    return ptt_values
+
 def moving_average(data, window_size):
     return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
 
@@ -517,6 +553,7 @@ def estimate_systolic_blood_pressure(ptt_values, gender):
     return estimated_sbp
 
 def estimate_diastolic_blood_pressure(ptt_values, gender):
+
     if gender == 'male':
         a_dbp = -75   # Coefficiente per la stima della DBP negli uomini
         b_dbp = 80    # Intercetta per la stima della DBP negli uomini
@@ -528,6 +565,165 @@ def estimate_diastolic_blood_pressure(ptt_values, gender):
     ptt_values = np.array(ptt_values)  
     estimated_dbp = a_dbp * ptt_values + b_dbp
     return estimated_dbp
+
+def estimate_bp_from_aix(aix_values):
+    """
+    Stima la pressione sanguigna (SBP e DBP) dall'Augmentation Index (AIx).
+    
+    :param aix_values: Array di valori AIx.
+    :return: Tuple con SBP e DBP stimati.
+    """
+    # Coefficienti basati su studi medici (da calibrare con dati reali)
+    a_sbp, b_sbp = 0.5, 120
+    a_dbp, b_dbp = 0.3, 80
+
+    estimated_sbp = a_sbp * aix_values + b_sbp
+    estimated_dbp = a_dbp * aix_values + b_dbp
+
+    return estimated_sbp, estimated_dbp
+
+from scipy.stats import pearsonr, ttest_ind
+import seaborn as sns
+import pandas as pd
+
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+def analyze_bp_methods(estimated_sbp_ppg, estimated_dbp_ppg, 
+                        estimated_sbp_ppw, estimated_dbp_ppw, 
+                        estimated_sbp_aix, estimated_dbp_aix, output_dir):
+    """
+    Confronta le diverse stime della pressione sanguigna ottenute con PPG, PPW e AIx.
+    """
+
+    print("[INFO] Performing Statistical Analysis on BP Estimates...")
+
+    # Trova la lunghezza minima tra tutti i dati per uniformare
+    min_length = min(len(estimated_sbp_ppg), len(estimated_dbp_ppg), 
+                     len(estimated_sbp_ppw), len(estimated_dbp_ppw), 
+                     len(estimated_sbp_aix), len(estimated_dbp_aix))
+
+    print(f"[DEBUG] Minimum length of data arrays: {min_length}")
+
+    # Tronca tutte le liste alla lunghezza minima
+    estimated_sbp_ppg = estimated_sbp_ppg[:min_length]
+    estimated_dbp_ppg = estimated_dbp_ppg[:min_length]
+    estimated_sbp_ppw = estimated_sbp_ppw[:min_length]
+    estimated_dbp_ppw = estimated_dbp_ppw[:min_length]
+    estimated_sbp_aix = estimated_sbp_aix[:min_length]
+    estimated_dbp_aix = estimated_dbp_aix[:min_length]
+
+    # Crea il DataFrame con dati uniformati
+    data = {
+        "SBP_PPG": estimated_sbp_ppg,
+        "DBP_PPG": estimated_dbp_ppg,
+        "SBP_PPW": estimated_sbp_ppw,
+        "DBP_PPW": estimated_dbp_ppw,
+        "SBP_AIx": estimated_sbp_aix,
+        "DBP_AIx": estimated_dbp_aix,
+    }
+
+    df = pd.DataFrame(data)
+
+    print("[INFO] DataFrame created successfully!")
+
+    # Salva i dati in un file CSV
+    df.to_csv(os.path.join(output_dir, "blood_pressure_estimates.csv"), index=False)
+    print("[INFO] Blood pressure estimates saved to CSV.")
+
+    # 📊 Visualizza le distribuzioni con un pairplot
+    plt.figure(figsize=(12, 8))
+    sns.pairplot(df)
+    plt.suptitle("Pairplot of Blood Pressure Estimates", y=1.02)
+    plt.savefig(os.path.join(output_dir, "blood_pressure_comparison_pairplot.png"))
+    plt.close()
+    print("[INFO] Pairplot saved.")
+
+    # 📉 Boxplot per confrontare le distribuzioni
+    plt.figure(figsize=(12, 6))
+    df.boxplot()
+    plt.xticks(rotation=15)
+    plt.title("Comparison of Blood Pressure Estimates")
+    plt.savefig(os.path.join(output_dir, "blood_pressure_comparison_boxplot.png"))
+    plt.close()
+    print("[INFO] Boxplot saved.")
+
+    print("[INFO] Statistical analysis completed successfully!")
+
+def analyze_blood_pressure_estimations(sbp_ppg, dbp_ppg, sbp_ppw, dbp_ppw, sbp_aix, dbp_aix, output_dir):
+    """
+    Analizza statisticamente le stime della pressione sanguigna ottenute con PTT-PPG, PTT-PPW e AIx.
+    """
+    methods = ["PTT-PPG", "PTT-PPW", "AIx"]
+    
+    # Creiamo un DataFrame con tutte le stime
+    df = pd.DataFrame({
+        "SBP_PPG": sbp_ppg, "DBP_PPG": dbp_ppg,
+        "SBP_PPW": sbp_ppw, "DBP_PPW": dbp_ppw,
+        "SBP_AIx": sbp_aix, "DBP_AIx": dbp_aix
+    })
+    
+    # Matrice di correlazione
+    correlation_matrix = df.corr()
+    plt.figure(figsize=(8,6))
+    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
+    plt.title("Correlation Matrix of BP Estimations")
+    plt.savefig(f"{output_dir}/correlation_matrix.png")
+    plt.close()
+    
+    # Scatter Plot per SBP e DBP
+    plt.figure(figsize=(12, 5))
+    plt.subplot(1, 2, 1)
+    plt.scatter(sbp_ppg, sbp_ppw, label="PTT-PPG vs PTT-PPW", alpha=0.7)
+    plt.scatter(sbp_ppg, sbp_aix, label="PTT-PPG vs AIx", alpha=0.7)
+    plt.xlabel("SBP PPG")
+    plt.ylabel("SBP Estimations")
+    plt.legend()
+    plt.title("SBP Estimations Comparison")
+
+    plt.subplot(1, 2, 2)
+    plt.scatter(dbp_ppg, dbp_ppw, label="PTT-PPG vs PTT-PPW", alpha=0.7)
+    plt.scatter(dbp_ppg, dbp_aix, label="PTT-PPG vs AIx", alpha=0.7)
+    plt.xlabel("DBP PPG")
+    plt.ylabel("DBP Estimations")
+    plt.legend()
+    plt.title("DBP Estimations Comparison")
+
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/scatter_bp_estimations.png")
+    plt.close()
+    
+    # Bland-Altman Plot
+    def bland_altman_plot(data1, data2, label, output_path):
+        mean = np.mean([data1, data2], axis=0)
+        diff = data1 - data2
+        md = np.mean(diff)
+        sd = np.std(diff)
+
+        plt.figure(figsize=(6, 5))
+        plt.scatter(mean, diff, alpha=0.5)
+        plt.axhline(md, color='red', linestyle='--', label="Mean Diff")
+        plt.axhline(md + 1.96 * sd, color='blue', linestyle='--', label="+1.96 SD")
+        plt.axhline(md - 1.96 * sd, color='blue', linestyle='--', label="-1.96 SD")
+        plt.xlabel("Mean BP Estimation")
+        plt.ylabel("Difference")
+        plt.title(f"Bland-Altman Plot ({label})")
+        plt.legend()
+        plt.savefig(output_path)
+        plt.close()
+
+    bland_altman_plot(sbp_ppg, sbp_ppw, "SBP PPG vs PPW", f"{output_dir}/bland_altman_sbp_ppg_ppw.png")
+    bland_altman_plot(sbp_ppg, sbp_aix, "SBP PPG vs AIx", f"{output_dir}/bland_altman_sbp_ppg_aix.png")
+    bland_altman_plot(dbp_ppg, dbp_ppw, "DBP PPG vs PPW", f"{output_dir}/bland_altman_dbp_ppg_ppw.png")
+    bland_altman_plot(dbp_ppg, dbp_aix, "DBP PPG vs AIx", f"{output_dir}/bland_altman_dbp_ppg_aix.png")
+
+    # T-Test per verificare differenze significative
+    for (col1, col2) in [("SBP_PPG", "SBP_PPW"), ("SBP_PPG", "SBP_AIx"), ("DBP_PPG", "DBP_PPW"), ("DBP_PPG", "DBP_AIx")]:
+        t_stat, p_value = ttest_rel(df[col1], df[col2])
+        print(f"T-Test {col1} vs {col2}: t-statistic={t_stat:.3f}, p-value={p_value:.3f}")
+    
+    print("[INFO] Analisi statistica completata! Grafici salvati.")
 
 # --- DATA VISUALIZATION AND SAVING ---
 def plot_ppg_signal(ppg_signal, label, output_dir):
@@ -551,14 +747,14 @@ def plot_peaks(ppg_signal, peaks, label, output_dir):
     plt.savefig(os.path.join(output_dir, f'{label}_peaks.png'))
     plt.close()
 
-def plot_ptt_values(ptt_values, output_dir):
+def plot_ptt_values(ptt_values, output_dir, label="PTT Values"):
     plt.figure(figsize=(10, 4))
-    plt.plot(ptt_values, label='PTT Values')
+    plt.plot(ptt_values, label=label)
     plt.xlabel('Measurement Index')
     plt.ylabel('PTT (seconds)')
-    plt.title('PTT Values Over Time')
+    plt.title(f'{label} Over Time')
     plt.legend()
-    plt.savefig(os.path.join(output_dir, 'ptt_values.png'))
+    plt.savefig(os.path.join(output_dir, f'ptt_{label.replace("-", "_")}.png'))
     plt.close()
 
 def plot_estimated_bp(bp_values, label, output_dir):
@@ -604,8 +800,8 @@ def save_estimated_bp(bp_values, label, output_dir):
 def initialize_paths_and_config():
     print("\n[INFO] Initializing paths and configurations...")
     dataset_folder = "/Volumes/DanoUSB"
-    subject = "M001"
-    task = "T3"
+    subject = "M007"
+    task = "T9"
     gender = "male"
     video_path = f"{dataset_folder}/{subject}/{task}/vid.avi"
     output_dir = f"NIAC/{subject}/{task}"
@@ -720,19 +916,188 @@ def preprocess_and_filter_signals(signals, sampling_rate):
     )
     return filtered_signals
 
-def save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, ptt, estimated_sbp, estimated_dbp, output_dir):
+def save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, ptt, estimated_sbp, estimated_dbp, output_dir, label="PTT"):
     """
     Salva e visualizza i risultati delle elaborazioni.
     """
-    print("\n[INFO] Saving and visualizing results...")
-    plot_peaks(bvp_forehead, forehead_peaks, 'Forehead PPG (CHROM)', output_dir)
-    plot_peaks(bvp_neck, neck_peaks, 'Neck PPG (CHROM)', output_dir)
-    plot_ptt_values(ptt, output_dir)
-    plot_estimated_bp(estimated_sbp, 'SBP', output_dir)
-    plot_estimated_bp(estimated_dbp, 'DBP', output_dir)
-    save_estimated_bp(estimated_sbp, 'SBP', output_dir)
-    save_estimated_bp(estimated_dbp, 'DBP', output_dir)
-    print("[INFO] Results saved and visualized successfully.")
+    print(f"\n[INFO] Saving and visualizing results for {label}...")
+    plot_peaks(bvp_forehead, forehead_peaks, f'Forehead PPG ({label})', output_dir)
+    plot_peaks(bvp_neck, neck_peaks, f'Neck PPG ({label})', output_dir)
+    plot_ptt_values(ptt, output_dir, label=label)
+    plot_estimated_bp(estimated_sbp, f'SBP ({label})', output_dir)
+    plot_estimated_bp(estimated_dbp, f'DBP ({label})', output_dir)
+    save_estimated_bp(estimated_sbp, f'SBP_{label}', output_dir)
+    save_estimated_bp(estimated_dbp, f'DBP_{label}', output_dir)
+    print(f"[INFO] Results saved and visualized successfully for {label}.")
+
+from scipy.stats import pearsonr
+
+def compare_ptt_methods(ptt_ppw, ptt_ppg):
+    """
+    Confronta il PTT calcolato con PPG-PPW e PPG-PPG usando la correlazione di Pearson.
+    """
+    if len(ptt_ppw) == 0 or len(ptt_ppg) == 0:
+        print("[ERROR] One of the PTT arrays is empty. Cannot compare.")
+        return
+
+    correlation, _ = pearsonr(ptt_ppw, ptt_ppg)
+    print(f"[INFO] Correlation between PPG-PPW PTT and PPG-PPG PTT: {correlation:.3f}")
+
+def compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, output_dir):
+    """
+    Confronta le diverse stime della pressione sanguigna (SBP e DBP) calcolando
+    il coefficiente di correlazione di Pearson tra PTT-PPG, PTT-PPW e AIx.
+
+    Salva i risultati e genera un grafico della matrice di correlazione.
+    """
+    print("\n[INFO] Comparing Blood Pressure Estimations with Pearson's Correlation...")
+
+    # Trova la lunghezza minima tra tutti i dati per uniformare
+    min_length = min(len(estimated_sbp_ppg), len(estimated_dbp_ppg),len(estimated_sbp_ppw), len(estimated_dbp_ppw),  len(estimated_sbp_aix), len(estimated_dbp_aix))
+
+    # Tronca le liste alla lunghezza minima per allineare i dati
+    estimated_sbp_ppg = estimated_sbp_ppg[:min_length]
+    estimated_dbp_ppg = estimated_dbp_ppg[:min_length]
+    estimated_sbp_ppw = estimated_sbp_ppw[:min_length]
+    estimated_dbp_ppw = estimated_dbp_ppw[:min_length]
+    estimated_sbp_aix = estimated_sbp_aix[:min_length]
+    estimated_dbp_aix = estimated_dbp_aix[:min_length]
+
+    # Creazione DataFrame per analisi
+    data = {
+        "SBP_PPG": estimated_sbp_ppg,
+        "DBP_PPG": estimated_dbp_ppg,
+        "SBP_PPW": estimated_sbp_ppw,
+        "DBP_PPW": estimated_dbp_ppw,
+        "SBP_AIx": estimated_sbp_aix,
+        "DBP_AIx": estimated_dbp_aix,
+    }
+
+    df = pd.DataFrame(data)
+
+    # Calcola le correlazioni di Pearson
+    correlation_results = {}
+    comparisons = [
+        ("SBP_PPG", "SBP_PPW"),
+        ("SBP_PPG", "SBP_AIx"),
+        ("SBP_PPW", "SBP_AIx"),
+        ("DBP_PPG", "DBP_PPW"),
+        ("DBP_PPG", "DBP_AIx"),
+        ("DBP_PPW", "DBP_AIx"),
+    ]
+
+    for col1, col2 in comparisons:
+        r_value, p_value = pearsonr(df[col1], df[col2])
+        correlation_results[f"{col1} vs {col2}"] = {"Pearson r": r_value, "p-value": p_value}
+
+    # Converti i risultati in DataFrame e salva
+    correlation_df = pd.DataFrame.from_dict(correlation_results, orient='index')
+    correlation_df.to_csv(os.path.join(output_dir, "pearson_correlation_results.csv"))
+    print("[INFO] Pearson correlation results saved to CSV.")
+
+    # Matrice di correlazione
+    correlation_matrix = df.corr()
+    plt.figure(figsize=(8,6))
+    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
+    plt.title("Correlation Matrix of BP Estimations")
+    plt.savefig(os.path.join(output_dir, "correlation_matrix.png"))
+    plt.close()
+    print("[INFO] Correlation matrix plot saved.")
+
+    print("[INFO] Blood pressure estimation comparison completed.")
+
+def correlate_bp_ptt(ptt_values, bp_values, label):
+    """
+    Calcola la correlazione di Pearson tra PTT e pressione sanguigna.
+    """
+    if len(ptt_values) == 0 or len(bp_values) == 0:
+        print(f"[ERROR] Nessun valore PTT o BP valido per {label}!")
+        return None
+
+    min_length = min(len(ptt_values), len(bp_values))
+    ptt_values = ptt_values[:min_length]
+    bp_values = bp_values[:min_length]
+
+    correlation, p_value = pearsonr(ptt_values, bp_values)
+    print(f"[INFO] Correlazione tra PTT e {label}: {correlation:.3f} (p-value: {p_value:.3f})")
+    return correlation
+
+def evaluate_estimations(estimated_bp, real_bp, method_name, output_dir):
+    """
+    Valuta l'accuratezza delle stime della pressione sanguigna rispetto ai valori reali.
+    Calcola MAE, RMSE e Pearson correlation e genera il Bland-Altman plot.
+    """
+    if len(estimated_bp) == 0 or len(real_bp) == 0:
+        print(f"[ERROR] Dati mancanti per {method_name}. Salto il calcolo.")
+        return
+
+    # Assicurarsi che entrambe le liste abbiano la stessa lunghezza
+    min_length = min(len(estimated_bp), len(real_bp))
+    estimated_bp = np.array(estimated_bp[:min_length])
+    real_bp = np.array(real_bp[:min_length])
+
+    # 1️⃣ MAE - Mean Absolute Error
+    mae = np.mean(np.abs(estimated_bp - real_bp))
+
+    # 2️⃣ RMSE - Root Mean Squared Error
+    rmse = np.sqrt(np.mean((estimated_bp - real_bp) ** 2))
+
+    # 3️⃣ Pearson Correlation
+    correlation, p_value = pearsonr(estimated_bp, real_bp)
+
+    # 4️⃣ Bland-Altman Plot
+    mean_bp = (estimated_bp + real_bp) / 2
+    diff_bp = estimated_bp - real_bp  # Differenza tra stima e valore reale
+    mean_diff = np.mean(diff_bp)
+    std_diff = np.std(diff_bp)
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(mean_bp, diff_bp, color='blue', alpha=0.5, label=method_name)
+    plt.axhline(mean_diff, color='red', linestyle='--', label="Mean Diff")
+    plt.axhline(mean_diff + 1.96 * std_diff, color='black', linestyle='dotted', label="+1.96 SD")
+    plt.axhline(mean_diff - 1.96 * std_diff, color='black', linestyle='dotted', label="-1.96 SD")
+    plt.xlabel("Mean BP (mmHg)")
+    plt.ylabel("Difference (Estimated - Real) (mmHg)")
+    plt.title(f"Bland-Altman Plot - {method_name}")
+    plt.legend()
+    plt.grid()
+    
+    # Salva il grafico
+    output_path = f"{output_dir}/bland_altman_{method_name}.png"
+    plt.savefig(output_path)
+    plt.close()
+    print(f"[INFO] Bland-Altman Plot salvato in {output_path}")
+
+    # Stampa i risultati
+    print(f"\n[RESULTS] {method_name}")
+    print(f"MAE: {mae:.2f} mmHg")
+    print(f"RMSE: {rmse:.2f} mmHg")
+    print(f"Pearson Correlation: {correlation:.2f} (p-value: {p_value:.3f})")
+
+    return mae, rmse, correlation, p_value
+
+import matplotlib.pyplot as plt
+
+def plot_ptt_vs_bp(ptt_values, bp_values, label, output_dir):
+    """
+    Crea un grafico scatter per visualizzare la correlazione tra PTT e pressione sanguigna.
+    """
+    min_length = min(len(ptt_values), len(bp_values))
+    ptt_values = ptt_values[:min_length]
+    bp_values = bp_values[:min_length]
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(ptt_values, bp_values, alpha=0.7, color='blue', label=f"{label}")
+    plt.xlabel("Pulse Transit Time (PTT) [s]")
+    plt.ylabel("Blood Pressure (mmHg)")
+    plt.title(f"Correlazione tra PTT e {label}")
+    plt.legend()
+    plt.grid(True)
+    
+    output_path = os.path.join(output_dir, f"ptt_vs_{label.replace(' ', '_')}.png")
+    plt.savefig(output_path)
+    plt.close()
+    print(f"[INFO] Grafico salvato in {output_path}")
 
 def main():
     # Step 0: Initialize paths and configurations
@@ -740,6 +1105,16 @@ def main():
     sampling_rate = get_sampling_rate(video_path)
     print(f"[INFO] Sampling rate: {sampling_rate} FPS\n")
 
+        # Percorsi ai file di pressione sanguigna
+    bp_systolic_file = "/Volumes/DanoUSB/Physiology/M007/T9/LA Systolic BP_mmHg.txt"
+    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/M007/T9/BP Dia_mmHg.txt"
+
+    # Lettura dei dati dai file
+    bp_systolic = read_blood_pressure_data(bp_systolic_file)
+    bp_diastolic = read_blood_pressure_data(bp_diastolic_file)
+
+    print(f"[INFO] Pressione Sistolica: {bp_systolic[:10]}")
+    print(f"[INFO] Pressione Diastolica: {bp_diastolic[:10]}")
     # Step 1: Calculate ROI
     neck_roi = calculate_roi(video_path, neck_roi_file_path)
     if neck_roi is None:
@@ -753,43 +1128,92 @@ def main():
 
 
     # Step 4: Calculate neck PPW
-    calculate_ppw_neck(video_path, neck_roi, output_dir)
+    ppw_neck = calculate_ppw_neck(video_path, neck_roi, output_dir)
 
      # Step 5: Preprocess and filter signals
     filtered_forehead = preprocess_and_filter_signals(T_rgb_signals_forehead, sampling_rate)
     filtered_neck = preprocess_and_filter_signals(T_mean_signals_neck, sampling_rate)
 
+
     # Step 6: Extract BVP
     print("\n[STEP 6] Extracting BVP...")
-    bvp_forehead = cpu_CHROM(filtered_forehead)  # CHROM for forehead
-    bvp_neck = cpu_POS(filtered_neck)  # POS for neck
+    bvp_forehead = cpu_CHROM(filtered_forehead)  
+    bvp_neck = cpu_POS(filtered_neck)  
     print("[INFO] BVP signals extracted successfully.")
 
-    # Step 7: Detect peaks and calculate AIx
-    print("\n[STEP 7] Detecting peaks and calculating AIx...")
+    # Step 7: Detect peaks
+    print("\n[STEP 7] Detecting peaks...")
     forehead_peaks = find_peaks_in_signal(bvp_forehead, fps=sampling_rate)
-    neck_peaks = find_peaks_in_signal(bvp_neck, fps=sampling_rate)
-    calculate_aix(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, sampling_rate, output_dir)
+    neck_peaks_ppg = find_peaks_in_signal(bvp_neck, fps=sampling_rate)
 
-
-    # Step 8: Calculate PTT
+    neck_peaks_ppw = find_peaks_in_signal(ppw_neck, fps=sampling_rate)
+    
     print("\n[STEP 8] Calculating PTT...")
-    raw_ptt = calculate_ptt(forehead_peaks, neck_peaks, sampling_rate, output_dir)
-    ptt = validate_ptt(raw_ptt)
-    print(f"[INFO] Filtered PTT values: {ptt}")
+
+# Assicurati di avere entrambe le variabili correttamente assegnate
+    ptt_forehead_ppw_neck = calculate_ptt(forehead_peaks, neck_peaks_ppw, sampling_rate, output_dir)
+    ptt_forehead_ppw_neck = validate_ptt(ptt_forehead_ppw_neck)
+
+    ptt_forehead_ppg_neck = calculate_ptt(forehead_peaks, neck_peaks_ppg, sampling_rate, output_dir)
+    ptt_forehead_ppg_neck = validate_ptt(ptt_forehead_ppg_neck)
+
+    print(f"[INFO] PTT Forehead-PPW Neck: {ptt_forehead_ppw_neck}")
+    print(f"[INFO] PTT Forehead-PPG Neck: {ptt_forehead_ppg_neck}")
+
+    # Verifica che le variabili siano state correttamente assegnate
+    if ptt_forehead_ppw_neck.size == 0 or ptt_forehead_ppg_neck.size == 0:
+        print("[ERROR] Nessun valore PTT valido calcolato! Interrompo l'esecuzione.")
 
     # Step 9: Estimate Blood Pressure
     print("\n[STEP 9] Estimating Blood Pressure...")
-    estimated_sbp = estimate_systolic_blood_pressure(ptt, gender)
-    estimated_dbp = estimate_diastolic_blood_pressure(ptt, gender)
-    print(f"[INFO] Estimated SBP: {estimated_sbp}")
-    print(f"[INFO] Estimated DBP: {estimated_dbp}")
 
-    # Step 10: Save and visualize results
-    save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, ptt, estimated_sbp, estimated_dbp, output_dir)
+    estimated_sbp_ppw = estimate_systolic_blood_pressure(ptt_forehead_ppw_neck, gender)
+    estimated_dbp_ppw = estimate_diastolic_blood_pressure(ptt_forehead_ppw_neck, gender)
 
-    # Final message
+    estimated_sbp_ppg = estimate_systolic_blood_pressure(ptt_forehead_ppg_neck, gender)
+    estimated_dbp_ppg = estimate_diastolic_blood_pressure(ptt_forehead_ppg_neck, gender)
+
+    print(f"[INFO] Estimated SBP (PPW): {estimated_sbp_ppw}")
+    print(f"[INFO] Estimated DBP (PPW): {estimated_dbp_ppw}")
+
+    print(f"[INFO] Estimated SBP (PPG): {estimated_sbp_ppg}")
+    print(f"[INFO] Estimated DBP (PPG): {estimated_dbp_ppg}")
+
+    # Step 10: Calculate AIx
+    print("\n[STEP 10] Calculating AIx...")
+    aix_values = calculate_aix(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks_ppg, sampling_rate, output_dir)
+
+    print("\n[STEP 11] Estimating Blood Pressure from AIx...")
+    estimated_sbp_aix, estimated_dbp_aix = estimate_bp_from_aix(aix_values)
+
+    save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks_ppg, ptt_forehead_ppg_neck, estimated_sbp_ppg, estimated_dbp_ppg, output_dir, label="PPG-PPG")
+    save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks_ppw, ptt_forehead_ppw_neck, estimated_sbp_ppw, estimated_dbp_ppw, output_dir, label="PPG-PPW")
+    save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks_ppg, aix_values, estimated_sbp_aix, estimated_dbp_aix, output_dir, label="AIx")
+
+    print("\n[STEP 16] Evaluating Estimation Accuracy...\n")
+    evaluate_estimations(estimated_sbp_ppg, bp_systolic, "SBP_PPG", output_dir)
+    evaluate_estimations(estimated_dbp_ppg, bp_diastolic, "DBP_PPG", output_dir)
+    evaluate_estimations(estimated_sbp_ppw, bp_systolic, "SBP_PPW", output_dir)
+    evaluate_estimations(estimated_dbp_ppw, bp_diastolic, "DBP_PPW", output_dir)
+    evaluate_estimations(estimated_sbp_aix, bp_systolic, "SBP_AIx", output_dir)
+    evaluate_estimations(estimated_dbp_aix, bp_diastolic, "DBP_AIx", output_dir)
+    # Step 13: Confronto tra metodi di stima della pressione sanguigna
+    print("\n[STEP 13] Analyzing Blood Pressure Estimation Methods...")
+    analyze_bp_methods(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, output_dir)
+
+    print("\n[STEP 14] Comparing Blood Pressure Estimation Methods...")
+    compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, output_dir)
+
+    print("\n[STEP 15] Computing correlation between PTT and Blood Pressure...\n")
+    correlate_bp_ptt(ptt_forehead_ppg_neck, bp_systolic, "SBP")
+    correlate_bp_ptt(ptt_forehead_ppg_neck, bp_diastolic, "DBP")
+# Plot dei risultati
+    plot_ptt_vs_bp(ptt_forehead_ppg_neck, bp_systolic, "SBP", output_dir)
+    plot_ptt_vs_bp(ptt_forehead_ppg_neck, bp_diastolic, "DBP", output_dir)
+
     print("\n[INFO] All processing steps completed successfully.")
+
 
 if __name__ == "__main__":
     main()
+
