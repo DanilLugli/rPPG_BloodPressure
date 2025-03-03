@@ -1526,8 +1526,8 @@ def save_estimated_bp(bp_values, label, output_dir):
 def initialize_paths_and_config():
     print("\n[INFO] Initializing paths and configurations...")
     dataset_folder = "/Volumes/DanoUSB"
-    subject = "F005"
-    task = "T3"
+    subject = "F004"
+    task = "T5"
     gender = "female"
     video_path = f"{dataset_folder}/{subject}/{task}/vid.avi"
     output_dir = f"NIAC/{subject}/{task}"
@@ -1946,17 +1946,17 @@ def compare_ptt_methods(ptt_cross_corr, ptt_direct, output_dir, label):
     plt.close()
     print(f"[INFO] Comparison plot saved in {output_path}")
 
-def compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, output_dir):
+def compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix=""):
     """
     Confronta le diverse stime della pressione sanguigna (SBP e DBP) calcolando
-    il coefficiente di correlazione di Pearson tra PTT-PPG, PTT-PPW e AIx.
+    il coefficiente di correlazione di Pearson tra PTT-PPG, PTT-PPW, AIx e AIx Red.
 
     Salva i risultati e genera un grafico della matrice di correlazione.
     """
-    print("\n[INFO] Comparing Blood Pressure Estimations with Pearson's Correlation...")
+    print(f"\n[INFO] Comparing Blood Pressure Estimations with Pearson's Correlation ({label_suffix})...")
 
     # Trova la lunghezza minima tra tutti i dati per uniformare
-    min_length = min(len(estimated_sbp_ppg), len(estimated_dbp_ppg),len(estimated_sbp_ppw), len(estimated_dbp_ppw),  len(estimated_sbp_aix), len(estimated_dbp_aix))
+    min_length = min(len(estimated_sbp_ppg), len(estimated_dbp_ppg), len(estimated_sbp_ppw), len(estimated_dbp_ppw), len(estimated_sbp_aix), len(estimated_dbp_aix), len(estimated_sbp_aix_red), len(estimated_dbp_aix_red))
 
     # Tronca le liste alla lunghezza minima per allineare i dati
     estimated_sbp_ppg = estimated_sbp_ppg[:min_length]
@@ -1965,6 +1965,8 @@ def compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_p
     estimated_dbp_ppw = estimated_dbp_ppw[:min_length]
     estimated_sbp_aix = estimated_sbp_aix[:min_length]
     estimated_dbp_aix = estimated_dbp_aix[:min_length]
+    estimated_sbp_aix_red = estimated_sbp_aix_red[:min_length]
+    estimated_dbp_aix_red = estimated_dbp_aix_red[:min_length]
 
     # Creazione DataFrame per analisi
     data = {
@@ -1974,6 +1976,8 @@ def compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_p
         "DBP_PPW": estimated_dbp_ppw,
         "SBP_AIx": estimated_sbp_aix,
         "DBP_AIx": estimated_dbp_aix,
+        "SBP_AIx_Red": estimated_sbp_aix_red,
+        "DBP_AIx_Red": estimated_dbp_aix_red,
     }
 
     df = pd.DataFrame(data)
@@ -1983,31 +1987,67 @@ def compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_p
     comparisons = [
         ("SBP_PPG", "SBP_PPW"),
         ("SBP_PPG", "SBP_AIx"),
+        ("SBP_PPG", "SBP_AIx_Red"),
         ("SBP_PPW", "SBP_AIx"),
+        ("SBP_PPW", "SBP_AIx_Red"),
+        ("SBP_AIx", "SBP_AIx_Red"),
         ("DBP_PPG", "DBP_PPW"),
         ("DBP_PPG", "DBP_AIx"),
+        ("DBP_PPG", "DBP_AIx_Red"),
         ("DBP_PPW", "DBP_AIx"),
+        ("DBP_PPW", "DBP_AIx_Red"),
+        ("DBP_AIx", "DBP_AIx_Red"),
     ]
 
     for col1, col2 in comparisons:
-        r_value, p_value = pearsonr(df[col1], df[col2])
-        correlation_results[f"{col1} vs {col2}"] = {"Pearson r": r_value, "p-value": p_value}
+        if len(df[col1]) >= 2 and len(df[col2]) >= 2:
+            r_value, p_value = pearsonr(df[col1], df[col2])
+            correlation_results[f"{col1} vs {col2}"] = {"Pearson r": r_value, "p-value": p_value}
+        else:
+            print(f"[WARNING] Length of {col1} or {col2} is less than 2. Skipping correlation calculation.")
 
     # Converti i risultati in DataFrame e salva
     correlation_df = pd.DataFrame.from_dict(correlation_results, orient='index')
-    correlation_df.to_csv(os.path.join(output_dir, "pearson_correlation_results.csv"))
-    print("[INFO] Pearson correlation results saved to CSV.")
+    correlation_csv_path = os.path.join(output_dir, f"pearson_correlation_results{label_suffix}.csv")
+    correlation_df.to_csv(correlation_csv_path)
+    print(f"[INFO] Pearson correlation results saved to {correlation_csv_path}.")
 
     # Matrice di correlazione
     correlation_matrix = df.corr()
-    plt.figure(figsize=(8,6))
+    plt.figure(figsize=(10, 8))
     sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
-    plt.title("Correlation Matrix of BP Estimations")
-    plt.savefig(os.path.join(output_dir, "correlation_matrix.png"))
+    plt.title(f"Correlation Matrix of BP Estimations ({label_suffix})")
+    correlation_matrix_path = os.path.join(output_dir, f"correlation_matrix{label_suffix}.png")
+    plt.savefig(correlation_matrix_path)
     plt.close()
-    print("[INFO] Correlation matrix plot saved.")
+    print(f"[INFO] Correlation matrix plot saved to {correlation_matrix_path}.")
 
-    print("[INFO] Blood pressure estimation comparison completed.")
+    print(f"[INFO] Blood pressure estimation comparison completed ({label_suffix}).")
+
+def train_personalized_model(ptt_values, sbp_values, dbp_values):
+    """
+    Allena una regressione lineare per stimare SBP e DBP a partire dai valori PTT,
+    utilizzando i dati reali del soggetto (modello personalizzato).
+
+    :param ptt_values: Array dei valori PTT del soggetto.
+    :param sbp_values: Array dei valori reali di SBP del soggetto.
+    :param dbp_values: Array dei valori reali di DBP del soggetto.
+    :return: Tuple con i coefficienti (a_sbp, b_sbp, a_dbp, b_dbp) tali che:
+             SBP = a_sbp * PTT + b_sbp, DBP = a_dbp * PTT + b_dbp.
+    """
+    ptt = np.array(ptt_values)
+    sbp = np.array(sbp_values)
+    dbp = np.array(dbp_values)
+    
+    # Utilizziamo np.polyfit per stimare i coefficienti (retta di regressione)
+    a_sbp, b_sbp = np.polyfit(ptt, sbp, 1)
+    a_dbp, b_dbp = np.polyfit(ptt, dbp, 1)
+    
+    print(f"[INFO] Personalized model coefficients:")
+    print(f"  SBP: a = {a_sbp:.3f}, b = {b_sbp:.3f}")
+    print(f"  DBP: a = {a_dbp:.3f}, b = {b_dbp:.3f}")
+    
+    return a_sbp, b_sbp, a_dbp, b_dbp
 
 def correlate_bp_ptt(ptt_values, bp_values, label):
     """
@@ -2084,6 +2124,30 @@ def evaluate_estimations(estimated_bp, real_bp, method_name, output_dir):
 
     return mae, rmse, correlation, p_value
 
+def estimate_sbp_from_model(ptt_values, a_sbp, b_sbp):
+    """
+    Stima la SBP a partire dai valori PTT usando i coefficienti appresi.
+    
+    :param ptt_values: Array dei valori PTT.
+    :param a_sbp: Coefficiente della regressione per la SBP.
+    :param b_sbp: Intercetta della regressione per la SBP.
+    :return: Array di SBP stimate.
+    """
+    ptt_values = np.array(ptt_values)
+    return a_sbp * ptt_values + b_sbp
+
+def estimate_dbp_from_model(ptt_values, a_dbp, b_dbp):
+    """
+    Stima la DBP a partire dai valori PTT usando i coefficienti appresi.
+    
+    :param ptt_values: Array dei valori PTT.
+    :param a_dbp: Coefficiente della regressione per la DBP.
+    :param b_dbp: Intercetta della regressione per la DBP.
+    :return: Array di DBP stimate.
+    """
+    ptt_values = np.array(ptt_values)
+    return a_dbp * ptt_values + b_dbp
+
 import matplotlib.pyplot as plt
 
 def plot_ptt_vs_bp(ptt_values, bp_values, label, output_dir):
@@ -2118,8 +2182,8 @@ def main():
     print(f"[INFO] Using FPS: {sampling_rate} for analysis\n")
 
     # Percorsi ai file di pressione sanguigna
-    bp_systolic_file = "/Volumes/DanoUSB/Physiology/F005/T3/LA Systolic BP_mmHg.txt"
-    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/F005/T3/BP Dia_mmHg.txt"
+    bp_systolic_file = "/Volumes/DanoUSB/Physiology/F004/T5/LA Systolic BP_mmHg.txt"
+    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/F004/T5/BP Dia_mmHg.txt"
 
     # Lettura della pressione sanguigna
     bp_systolic = read_blood_pressure_data(bp_systolic_file)
@@ -2139,6 +2203,9 @@ def main():
 
     # Step 3: Process neck PPG
     T_mean_signals_neck = process_ppg_neck(video_path, neck_roi, output_dir)
+    if T_mean_signals_neck is None:
+        print("[ERROR] Failed to process neck PPG. Exiting.")
+        return
 
     # Step 4: Calculate neck PPW
     ppw_neck = calculate_ppw_neck(video_path, neck_roi, output_dir)
@@ -2302,7 +2369,35 @@ def main():
     estimated_sbp_aix_spline, estimated_dbp_aix_spline = estimate_bp_from_aix(aix_values_spline, output_dir)
     estimated_sbp_aix_red, estimated_dbp_aix_red = estimate_bp_from_aix(aix_values_red, output_dir)
 
-    # Salva e visualizza i risultati per entrambe le interpolazioni
+    # Stima della pressione sanguigna utilizzando i BVP puliti
+    print("\n[STEP 11] Estimating Blood Pressure with Cleaned BVP...")
+    estimated_sbp_clean = estimate_systolic_blood_pressure(ptt_direct, gender)
+    estimated_dbp_clean = estimate_diastolic_blood_pressure(ptt_direct, gender)
+    estimated_sbp_aix_clean, estimated_dbp_aix_clean = estimate_bp_from_aix(aix_values_conv, output_dir)
+
+
+
+    np.savetxt(os.path.join(output_dir, "estimated_sbp_aix_red.txt"), estimated_sbp_aix_red, fmt="%.2f")
+    np.savetxt(os.path.join(output_dir, "estimated_dbp_aix_red.txt"), estimated_dbp_aix_red, fmt="%.2f")
+    print(f"[INFO] Estimated SBP (AIx Red): {estimated_sbp_aix_red}")
+    print(f"[INFO] Estimated DBP (AIx Red): {estimated_dbp_aix_red}")
+    # Genera grafici separati per i risultati del canale rosso
+    plot_estimated_bp(estimated_sbp_aix_red, "Estimated SBP (AIx Red)", output_dir)
+    plot_estimated_bp(estimated_dbp_aix_red, "Estimated DBP (AIx Red)", output_dir)
+
+    # Se desideri confrontare i risultati stimati con i valori reali di pressione
+    evaluate_estimations(estimated_sbp_aix_red, bp_systolic, "Estimated_SBP_AIx_Red", output_dir)
+    evaluate_estimations(estimated_dbp_aix_red, bp_diastolic, "Estimated_DBP_AIx_Red", output_dir)
+
+    # Salva i dati in un CSV per ulteriori analisi
+    import pandas as pd
+    red_bp_data = pd.DataFrame({
+        "Estimated_SBP_AIx_Red": estimated_sbp_aix_red,
+        "Estimated_DBP_AIx_Red": estimated_dbp_aix_red
+    })
+    red_bp_data.to_csv(os.path.join(output_dir, "estimated_bp_aix_red.csv"), index=False)
+    print(f"[INFO] Estimated BP data (AIx Red) saved to {os.path.join(output_dir, 'estimated_bp_aix_red.csv')}")
+        # Salva e visualizza i risultati per entrambe le interpolazioni
     save_and_visualize_results(bvp_forehead_conv, bvp_neck, forehead_peaks_conv, neck_peaks_ppg, ptt_direct_conv, estimated_sbp_conv, estimated_dbp_conv, output_dir, label="Convolution")
     save_and_visualize_results(bvp_forehead_spline, bvp_neck, forehead_peaks_spline, neck_peaks_ppg, ptt_direct_spline, estimated_sbp_spline, estimated_dbp_spline, output_dir, label="Spline")
 
@@ -2315,15 +2410,23 @@ def main():
     analyze_bp_methods(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_conv, estimated_dbp_aix_conv, output_dir)
     analyze_bp_methods(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_spline, estimated_dbp_aix_spline, output_dir)
 
-    print("\n[STEP 13] Comparing Blood Pressure Estimation Methods...")
-    compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_conv, estimated_dbp_aix_conv, output_dir)
-    compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_spline, estimated_dbp_aix_spline, output_dir)
+    # print("\n[STEP 13] Comparing Blood Pressure Estimation Methods...")
+    # compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_conv, estimated_dbp_aix_conv, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Conv_vs_Spline_vs_AIx_vs_AIxRed_1")
+    # compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_spline, estimated_dbp_aix_spline, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Conv_vs_Spline_vs_AIx_vs_AIxRed_2")
+    
 
+
+    print("\n[STEP 13] Comparing Blood Pressure Estimation Methods...")
+    compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_conv, estimated_dbp_aix_conv, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Conv_vs_Spline_vs_AIx_1")
+    compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_spline, estimated_dbp_aix_spline, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Conv_vs_Spline_vs_AIx_2")
+    compare_bp_estimations(estimated_sbp_clean, estimated_dbp_clean, estimated_sbp_clean, estimated_dbp_clean, estimated_sbp_aix_clean, estimated_dbp_aix_clean, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Cleaned_BVP")
+    
     print("\n[STEP 14] Computing correlation between PTT and Blood Pressure...\n")
     correlate_bp_ptt(ptt_direct_conv, bp_systolic, "SBP")
     correlate_bp_ptt(ptt_direct_conv, bp_diastolic, "DBP")
     correlate_bp_ptt(ptt_direct_spline, bp_systolic, "SBP")
     correlate_bp_ptt(ptt_direct_spline, bp_diastolic, "DBP")
+
 
     ptt_methods = {
     "Direct_Conv": ptt_direct_conv,
@@ -2331,6 +2434,23 @@ def main():
     "CrossConv": ptt_cross_corr_conv,
     "CrossSpline": ptt_cross_corr_spline
     }
+    # ... all'interno del main() dopo aver calcolato ptt_direct_conv, bp_systolic e bp_diastolic
+
+    # # Esempio: usa ptt_direct_conv come array dei valori PTT per il soggetto attuale
+    # # Assicurati che bp_systolic e bp_diastolic siano allineati con i dati PTT (ad es. stessi intervalli)
+    # a_sbp, b_sbp, a_dbp, b_dbp = train_personalized_model(ptt_direct_conv, bp_systolic, bp_diastolic)
+
+    # # Stima BP utilizzando il modello personalizzato
+    # estimated_sbp_personalized = estimate_sbp_from_model(ptt_direct_conv, a_sbp, b_sbp)
+    # estimated_dbp_personalized = estimate_dbp_from_model(ptt_direct_conv, a_dbp, b_dbp)
+
+    # # Visualizza o salva i risultati per il modello personalizzato
+    # print(f"[INFO] Estimated SBP (Personalized): {estimated_sbp_personalized}")
+    # print(f"[INFO] Estimated DBP (Personalized): {estimated_dbp_personalized}")
+
+    # # Potresti anche valutare MAE, RMSE, correlazione, e generare plot Bland-Altman
+    # evaluate_estimations(estimated_sbp_personalized, bp_systolic, "Personalized_SBP", output_dir)
+    # evaluate_estimations(estimated_dbp_personalized, bp_diastolic, "Personalized_DBP", output_dir)
 
     compare_all_ptt_methods(ptt_methods, output_dir)
 

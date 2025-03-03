@@ -1,0 +1,5 @@
+Comparison: SBP PPG vs PPW
+Mean Difference (MD): -0.082
+Standard Deviation of Difference (SD): 8.217
+Upper limit (MD + 1.96 * SD): 16.023
+Lower limit (MD - 1.96 * SD): -16.187
