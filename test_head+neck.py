@@ -1526,9 +1526,9 @@ def save_estimated_bp(bp_values, label, output_dir):
 def initialize_paths_and_config():
     print("\n[INFO] Initializing paths and configurations...")
     dataset_folder = "/Volumes/DanoUSB"
-    subject = "F004"
-    task = "T5"
-    gender = "female"
+    subject = "M005"
+    task = "T1"
+    gender = "male"
     video_path = f"{dataset_folder}/{subject}/{task}/vid.avi"
     output_dir = f"NIAC/{subject}/{task}"
     neck_roi_file_path = f"{output_dir}/neck_roi_dimensions.json"
@@ -2182,8 +2182,8 @@ def main():
     print(f"[INFO] Using FPS: {sampling_rate} for analysis\n")
 
     # Percorsi ai file di pressione sanguigna
-    bp_systolic_file = "/Volumes/DanoUSB/Physiology/F004/T5/LA Systolic BP_mmHg.txt"
-    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/F004/T5/BP Dia_mmHg.txt"
+    bp_systolic_file = "/Volumes/DanoUSB/Physiology/M005/T1/LA Systolic BP_mmHg.txt"
+    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/M005/T1/BP Dia_mmHg.txt"
 
     # Lettura della pressione sanguigna
     bp_systolic = read_blood_pressure_data(bp_systolic_file)
