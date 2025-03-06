@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import scipy.signal
+from scipy.stats import pearsonr
+
 
 def estimate_bp_using_phase_diff_segments(ppw_signal, bvp_signal, sampling_rate, num_segments=6):
     """
@@ -58,6 +60,7 @@ def estimate_bp_using_phase_diff_segments(ppw_signal, bvp_signal, sampling_rate,
     
     return {"Systolic BP (SBP)": sbp_list, "Diastolic BP (DBP)": dbp_list}
 
+
 def read_blood_pressure_data(file_path):
     """
     Legge i dati della pressione da file.
@@ -65,9 +68,10 @@ def read_blood_pressure_data(file_path):
     """
     return np.loadtxt(file_path, skiprows=1)
 
+
 if __name__ == "__main__":
     # Percorsi dei file per i segnali PPG/BVP
-    base_path = "/Users/danillugli/Desktop/Boccignone/Project/NIAC/F073/T9"
+    base_path = "/Users/danillugli/Desktop/Boccignone/Project/NIAC/F001/T3"
     ppw_file = os.path.join(base_path, "bvp_green_neck_neck.txt")
     bvp_file = os.path.join(base_path, "bvp_chrom_signal_forehead_conv.txt")
     
@@ -78,24 +82,39 @@ if __name__ == "__main__":
     sampling_rate = 100  # Ad esempio, 100 Hz
 
     bp_estimates = estimate_bp_using_phase_diff_segments(ppw_signal, bvp_signal, sampling_rate, num_segments=6)
+    print("Valori stimati (per segmento):")
     print(bp_estimates)
     
+    # Calcola la media dei valori stimati su tutti i segmenti
+    mean_sbp_estimated = np.mean(bp_estimates["Systolic BP (SBP)"])
+    mean_dbp_estimated = np.mean(bp_estimates["Diastolic BP (DBP)"])
+    
+    print(f"[INFO] Mean Estimated Systolic BP: {mean_sbp_estimated:.2f}")
+    print(f"[INFO] Mean Estimated Diastolic BP: {mean_dbp_estimated:.2f}")
+    
     # ------------------ Nuova sezione per i dati di pressione di riferimento ------------------
-    bp_systolic_file = "/Volumes/DanoUSB/Physiology/F073/T9/LA Systolic BP_mmHg.txt"
-    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/F073/T9/BP Dia_mmHg.txt"
+    bp_systolic_file = "/Volumes/DanoUSB/Physiology/F001/T3/LA Systolic BP_mmHg.txt"
+    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/F001/T3/BP Dia_mmHg.txt"
 
     bp_systolic = read_blood_pressure_data(bp_systolic_file)
     bp_diastolic = read_blood_pressure_data(bp_diastolic_file)
 
     def calculate_windowed_mean(data, num_windows):
         window_size = len(data) // num_windows
-        windowed_means = [np.mean(data[i*window_size:(i+1)*window_size]) for i in range(num_windows)]
+        windowed_means = [np.mean(data[i * window_size:(i + 1) * window_size]) for i in range(num_windows)]
         return np.array(windowed_means)
 
-    # Calcola i valori medi suddivisi in 20 finestre
+    # Calcola i valori medi suddivisi in 6 finestre
     num_windows = 6
     bp_systolic_mean = calculate_windowed_mean(bp_systolic, num_windows)
     bp_diastolic_mean = calculate_windowed_mean(bp_diastolic, num_windows)
 
     print(f"[INFO] Systolic BP (mean of 6 windows): {bp_systolic_mean}")
     print(f"[INFO] Diastolic BP (mean of 6 windows): {bp_diastolic_mean}")
+
+    # ------------------ Calcola la correlazione di Pearson ------------------
+    r_sbp, p_sbp = pearsonr(bp_estimates["Systolic BP (SBP)"], bp_systolic_mean)
+    r_dbp, p_dbp = pearsonr(bp_estimates["Diastolic BP (DBP)"], bp_diastolic_mean)
+
+    print("Systolic BP - Pearson correlation:", r_sbp, "p-value:", p_sbp)
+    print("Diastolic BP - Pearson correlation:", r_dbp, "p-value:", p_dbp)

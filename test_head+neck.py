@@ -47,7 +47,7 @@ forehead_indices = [162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389,
 def initialize_paths_and_config():
     print("\n[INFO] Initializing paths and configurations...")
     dataset_folder = "/Volumes/DanoUSB"
-    subject = "M042"
+    subject = "M025"
     task = "T3"
     gender = "male"
     video_path = f"{dataset_folder}/{subject}/{task}/vid.avi"
@@ -2103,41 +2103,6 @@ def bland_altman_results(estimated_sbp, real_sbp, estimated_dbp, real_dbp, outpu
 
     print(f"[INFO] Bland-Altman results saved to {output_dir}/bland_altman_results.csv")
 
-def evaluate_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, real_sbp, real_dbp, output_dir):
-    """
-    Valuta l'accuratezza delle stime della pressione sanguigna rispetto ai valori reali.
-    Calcola MAE, RMSE e Pearson correlation e genera il Bland-Altman plot.
-    """
-    if len(estimated_sbp_ppg) == 0 or len(real_sbp) == 0:
-        print("[ERROR] Dati mancanti per la stima SBP!")
-        return
-
-    # Assicurarsi che entrambe le liste abbiano la stessa lunghezza
-    min_length = min(len(estimated_sbp_ppg), len(real_sbp))
-    estimated_sbp_ppg = np.array(estimated_sbp_ppg[:min_length])
-    real_sbp = np.array(real_sbp[:min_length])
-
-    # Calcola MAE e RMSE
-    mae = np.mean(np.abs(estimated_sbp_ppg - real_sbp))
-    rmse = np.sqrt(np.mean((estimated_sbp_ppg - real_sbp) ** 2))
-
-    # Correlazione di Pearson
-    correlation, p_value = pearsonr(estimated_sbp_ppg, real_sbp)
-    
-    # Calcola Bland-Altman e salva i risultati
-    bland_altman_results_df = bland_altman_results(estimated_sbp_ppg, real_sbp, estimated_dbp_ppg, real_dbp, output_dir)
-
-    # Stampa i risultati
-    print(f"\n[RESULTS] SBP PPG vs Real SBP")
-    print(f"MAE: {mae:.2f} mmHg")
-    print(f"RMSE: {rmse:.2f} mmHg")
-    print(f"Pearson Correlation: {correlation:.2f} (p-value: {p_value:.3f})")
-
-    # Analizza altre tecniche (PPW, AIx)
-    # Esegui analisi similari per SBP-PPW, SBP-AIx, DBP-PPW, DBP-AIx
-
-    return bland_altman_results_df
-
 # --- DATA VISUALIZATION AND SAVING ---
 
 def plot_ppg_signal(ppg_signal, label, output_dir):
@@ -2338,8 +2303,8 @@ def main():
     print(f"[INFO] Using FPS: {sampling_rate} for analysis\n")
 
     # Percorsi ai file di pressione sanguigna
-    bp_systolic_file = "/Volumes/DanoUSB/Physiology/M042/T3/LA Systolic BP_mmHg.txt"
-    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/M042/T3/BP Dia_mmHg.txt"
+    bp_systolic_file = "/Volumes/DanoUSB/Physiology/M025/T3/LA Systolic BP_mmHg.txt"
+    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/M025/T3/BP Dia_mmHg.txt"
 
     # Lettura della pressione sanguigna di riferimento reali
     bp_systolic = read_blood_pressure_data(bp_systolic_file)
@@ -2575,7 +2540,6 @@ def main():
     evaluate_estimations(estimated_dbp_aix_red, bp_diastolic, "Estimated_DBP_AIx_Red", output_dir)
 
     # Salva i dati in un CSV per ulteriori analisi
-    import pandas as pd
     red_bp_data = pd.DataFrame({
         "Estimated_SBP_AIx_Red": estimated_sbp_aix_red,
         "Estimated_DBP_AIx_Red": estimated_dbp_aix_red
