@@ -1,35 +1,31 @@
-# --- LIBRARY IMPORTS ---
-
-# --- STANDARD LIBRARIES ---
+# --- LIBRERIE STANDARD ---
 import os
 import json
-
-# --- SCIENTIFIC COMPUTING & DATA ANALYSIS ---
-import numpy as np
-import pandas as pd
-import scipy.sparse as sparse
-import scipy.sparse.linalg as splinalg
-from scipy.signal import butter, sosfiltfilt, filtfilt, find_peaks, resample
-from scipy.stats import pearsonr, ttest_ind, iqr
 import time
+from fractions import Fraction
 
-# --- COMPUTER VISION ---
+# --- LIBRERIE DI TERZE PARTI ---
 import cv2
 import mediapipe as mp
-
-# --- DATA VISUALIZATION ---
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-print("All libraries imported successfully!")
+# --- SCIENTIFIC COMPUTING & ANALISI DATI ---
+import scipy.sparse as sparse
+import scipy.sparse.linalg as splinalg
+from scipy.signal import (
+    butter,
+    sosfiltfilt,
+    filtfilt,
+    find_peaks,
+    resample,
+    resample_poly
+)
+from scipy.interpolate import interp1d, CubicSpline
+from scipy.stats import pearsonr, ttest_ind, iqr
 
-from scipy.stats import pearsonr, ttest_ind
-import seaborn as sns
-import pandas as pd
-
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 
 
 print("Library imported successfully!")
@@ -46,7 +42,23 @@ face_mesh = mp_face_mesh.FaceMesh(
 # Indici dei landmark per la fronte (aggiornati per coprire tutta la fronte)
 forehead_indices = [162, 21, 54, 103, 67, 109, 10, 338, 297, 332, 284, 251, 389, 293, 334, 296, 336, 9, 66, 105, 63, 70]
 
+# --- CONFIGURAZIONE INIZIALE ---
+
+def initialize_paths_and_config():
+    print("\n[INFO] Initializing paths and configurations...")
+    dataset_folder = "/Volumes/DanoUSB"
+    subject = "M042"
+    task = "T3"
+    gender = "male"
+    video_path = f"{dataset_folder}/{subject}/{task}/vid.avi"
+    output_dir = f"NIAC/{subject}/{task}"
+    neck_roi_file_path = f"{output_dir}/neck_roi_dimensions.json"
+    os.makedirs(output_dir, exist_ok=True)
+    print(f"[INFO] Output directory: {output_dir}")
+    return video_path, output_dir, neck_roi_file_path, gender
+
 # --- MANAGE VIDEO ---
+
 def get_sampling_rate(video_path):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -105,6 +117,7 @@ def read_blood_pressure_data(file_path):
     return bp_data
 
 # --- ROI SELECTION AND FILE MANAGEMENT ---
+
 def select_neck_roi(frame):
     r = cv2.selectROI("Select Neck ROI", frame, fromCenter=False, showCrosshair=True)
     cv2.destroyWindow("Select Neck ROI")
@@ -125,10 +138,6 @@ def load_roi_dimensions(file_path):
         roi_data = json.load(file)
     return (roi_data['x'], roi_data['y'], roi_data['width'], roi_data['height'])
 
-import cv2
-import json
-import os
-
 def track_neck_roi(video_path, neck_roi_file_path, output_roi_path):
     """
     Implementa il tracking adattivo della ROI della carotide su un video.
@@ -142,6 +151,9 @@ def track_neck_roi(video_path, neck_roi_file_path, output_roi_path):
     if not ret:
         raise RuntimeError("[ERROR] Could not read first frame!")
 
+    # Riduci la risoluzione del frame per velocizzare il tracking
+    frame_resized = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+
     # Controlla se esiste già una ROI salvata
     if os.path.exists(neck_roi_file_path):
         with open(neck_roi_file_path, 'r') as file:
@@ -150,18 +162,22 @@ def track_neck_roi(video_path, neck_roi_file_path, output_roi_path):
         print("[INFO] ROI loaded from file:", roi)
     else:
         print("[INFO] Select the initial ROI manually (focus on the left side near the carotid)")
-        roi = cv2.selectROI("Select Neck ROI", frame, fromCenter=False, showCrosshair=True)
+        roi = cv2.selectROI("Select Neck ROI", frame_resized, fromCenter=False, showCrosshair=True)
         cv2.destroyAllWindows()
 
         # Salva la ROI selezionata
-        roi_data = {"x": roi[0], "y": roi[1], "width": roi[2], "height": roi[3]}
+        roi_data = {"x": roi[0] * 2, "y": roi[1] * 2, "width": roi[2] * 2, "height": roi[3] * 2}
         with open(neck_roi_file_path, 'w') as file:
             json.dump(roi_data, file)
         print("[INFO] ROI saved:", roi_data)
 
+    # Verifica che la ROI sia valida
+    if roi[0] + roi[2] > frame.shape[1] or roi[1] + roi[3] > frame.shape[0]:
+        raise ValueError(f"[ERROR] ROI {roi} out of bounds! Image size: {frame.shape}")
+
     # Inizializza il tracker
     tracker = cv2.TrackerCSRT_create()
-    tracker.init(frame, roi)
+    tracker.init(frame_resized, (roi[0] // 2, roi[1] // 2, roi[2] // 2, roi[3] // 2))
 
     roi_updates = []
 
@@ -170,16 +186,20 @@ def track_neck_roi(video_path, neck_roi_file_path, output_roi_path):
         if not ret:
             break
 
-        success, roi = tracker.update(frame)
+        # Riduci la risoluzione del frame per velocizzare il tracking
+        frame_resized = cv2.resize(frame, (frame.shape[1] // 2, frame.shape[0] // 2))
+
+        success, roi_resized = tracker.update(frame_resized)
 
         if success:
-            x, y, w, h = map(int, roi)
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            roi_updates.append({"x": x, "y": y, "width": w, "height": h})
+            x, y, w, h = map(int, roi_resized)
+            cv2.rectangle(frame_resized, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            roi_updates.append({"x": x * 2, "y": y * 2, "width": w * 2, "height": h * 2})
         else:
             print("[WARNING] Tracking lost in this frame!")
 
-        cv2.imshow("Tracking Neck ROI", frame)
+        # Disabilita la visualizzazione in tempo reale per migliorare le prestazioni
+        cv2.imshow("Tracking Neck ROI", frame_resized)
         if cv2.waitKey(20) & 0xFF == 27:  # ESC per uscire
             break
 
@@ -193,7 +213,64 @@ def track_neck_roi(video_path, neck_roi_file_path, output_roi_path):
     print(f"[INFO] Tracking completed! Updated ROIs saved in {output_roi_path}")
     return roi_updates
 
+def calculate_roi(video_path, neck_roi_file_path, output_roi_path):
+
+    """
+    Seleziona o carica la ROI iniziale e poi applica il tracking adattivo per aggiornarla frame dopo frame.
+    
+    :param video_path: Percorso del video da analizzare.
+    :param neck_roi_file_path: Percorso del file JSON in cui salvare/caricare la ROI iniziale.
+    :param output_roi_path: Percorso del file JSON in cui salvare/caricare le ROI aggiornate dal tracking.
+    :return: Ultima ROI tracciata (x, y, width, height)
+    """
+    print("\n[STEP 1] Calculating ROI with tracking...")
+
+    # Se esiste già un file con tutto il tracking adattivo, lo carica
+    if os.path.exists(output_roi_path):
+        with open(output_roi_path, 'r') as file:
+            roi_updates = json.load(file)
+        print(f"[INFO] Loaded adaptive tracking data from {output_roi_path}")
+        last_roi = roi_updates[-1]
+        return (last_roi['x'], last_roi['y'], last_roi['width'], last_roi['height'])
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video file: {video_path}")
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret:
+        print("[ERROR] Could not read frame from video.")
+        return None
+
+    # Se esiste una ROI salvata, la carica, altrimenti chiede la selezione manuale
+    if os.path.exists(neck_roi_file_path):
+        neck_roi = load_roi_dimensions(neck_roi_file_path)
+        print(f"[INFO] Neck ROI loaded from file: {neck_roi}")
+    else:
+        print("[INFO] Select neck ROI manually.")
+        neck_roi = select_neck_roi(frame)
+        save_roi_dimensions(neck_roi, neck_roi_file_path)
+        print(f"[INFO] Neck ROI saved to file: {neck_roi}")
+
+    # Controlla se la ROI è valida
+    if not neck_roi or len(neck_roi) != 4 or neck_roi[2] <= 0 or neck_roi[3] <= 0:
+        print("[ERROR] Invalid ROI. Check ROI selection.")
+        return None
+
+    # Avvia il tracking adattivo della ROI
+    roi_updates = track_neck_roi(video_path, neck_roi_file_path, output_roi_path)
+
+    if not roi_updates:
+        print("[ERROR] Tracking failed, no ROIs saved!")
+        return None
+
+    # Restituisce l'ultima ROI tracciata
+    last_roi = roi_updates[-1]
+    return (last_roi['x'], last_roi['y'], last_roi['width'], last_roi['height'])
+
 # --- FACE SIGNAL RGB EXTRACTION ---
+
 def get_face(image):
     """
     Funzione per elaborare l'immagine e restituire le coordinate dei landmark della fronte.
@@ -267,7 +344,28 @@ def extract_rgb_trace_MediaPipe(video_path, output_folder):
 
     return rgb_signals
 
-# --- NECK PPW EXTRACTION USING PIXFLOW ---
+def process_ppg_forehead(video_path, output_dir):
+    print("\n[STEP 2] Processing forehead PPG...")
+    rgb_signals = extract_rgb_trace_MediaPipe(video_path, output_dir)
+    # Convertiamo i segnali in array numpy separati per ciascun canale
+    R = np.array(rgb_signals['R'])
+    G = np.array(rgb_signals['G'])
+    B = np.array(rgb_signals['B'])
+    
+    # Verifica che ciascun tracciato abbia almeno 28 campioni
+    min_samples = 28
+    if R.shape[0] < min_samples:
+        needed = min_samples - R.shape[0]
+        R = np.concatenate((R, np.repeat(R[-1:], needed, axis=0)), axis=0)
+        G = np.concatenate((G, np.repeat(G[-1:], needed, axis=0)), axis=0)
+        B = np.concatenate((B, np.repeat(B[-1:], needed, axis=0)), axis=0)
+        print(f"[WARNING] Forehead signal had less than 28 samples. Extended to {R.shape[0]} samples.")
+    
+    print("[INFO] Forehead RGB signals extracted successfully.")
+    return R, G, B
+
+# --- NECK PPW/PPG EXTRACTION USING PIXFLOW ---
+
 def extract_pixflow_signal_improved(video_path, roi, output_folder, part, 
                                     fs=30.0, lowcut=0.5, highcut=3.0):
     """
@@ -415,7 +513,65 @@ def extract_rgb_trace(video_path, roi, output_folder, part):
 
     return rgb_signals
 
+def process_ppg_neck(video_path, neck_roi, output_dir):
+    print("\n[STEP 3] Processing neck PPG...")
+
+    if neck_roi is None or len(neck_roi) != 4:
+        print("[ERROR] Invalid Neck ROI. Check ROI selection.")
+        return None
+    
+    x, y, w, h = neck_roi
+    if w <= 0 or h <= 0:
+        print(f"[ERROR] Invalid ROI dimensions: {neck_roi}")
+        return None
+
+    print(f"[INFO] Using Neck ROI: x={x}, y={y}, w={w}, h={h}")
+
+    cap = cv2.VideoCapture(video_path)
+    ret, image = cap.read()
+    if not ret:
+        print("[ERROR] Could not read the first frame of the video.")
+        return None
+    cap.release()
+
+
+    rgb_signals = extract_rgb_trace(video_path, neck_roi, output_dir, "Neck")
+
+    print("[DEBUG] Extracted RGB signals for Neck")
+
+    if len(rgb_signals['R']) == 0 or len(rgb_signals['G']) == 0:
+        print("[ERROR] No valid RGB data extracted from Neck.")
+        return None
+
+    red_signal = np.array(rgb_signals['R'])
+    green_signal = np.array(rgb_signals['G'])
+
+    print(f"[DEBUG] Red signal shape: {red_signal.shape}, Green signal shape: {green_signal.shape}")
+
+    if red_signal.shape[0] < 5 or green_signal.shape[0] < 5:
+        print(f"[ERROR] Signals are too short! Red: {red_signal.shape[0]}, Green: {green_signal.shape[0]}")
+        return None
+
+    mean_rg_signal = np.vstack((red_signal, green_signal)).T  # Combine R and G into a 2D array
+
+    print(f"[DEBUG] Mean R+G signal shape: {mean_rg_signal.shape}")
+
+    if mean_rg_signal.shape[0] < 28:
+        needed = 28 - mean_rg_signal.shape[0]
+        last_samples = mean_rg_signal[-1:].repeat(needed, axis=0)
+        mean_rg_signal = np.vstack((mean_rg_signal, last_samples))
+        print(f"[WARNING] Neck signal had less than 28 samples. Extended to {mean_rg_signal.shape[0]} samples.")
+
+    return mean_rg_signal
+
+def calculate_ppw_neck(video_path, neck_roi, output_dir):
+    print("\n[STEP 4] Calculating neck PPW...")
+    ppw_signal = extract_pixflow_signal_improved(video_path, neck_roi, output_dir, "Neck")
+    print("[INFO] Neck PPW signal extracted successfully.")
+    return ppw_signal
+
 # --- SIGNAL PREPROCESSING AND CLEANING ---
+
 def smoothness_priors_detrend(signal, lambda_param=10):
     n = len(signal)
     if n < 2:
@@ -458,23 +614,6 @@ def bandpass_filter(signal, fs=30.0, lowcut=0.5, highcut=3.0, order=4):
     sos = butter(order, [lowcut, highcut], btype='band', fs=fs, output='sos')
     filtered_signal = sosfiltfilt(sos, signal)
     return filtered_signal
-
-def validate_ptt(ptt_values):
-    lower_limit = 0.08  # Ridotto a 0.08s per non eliminare troppi valori validi
-    upper_limit = 0.4   # Aumentato per includere potenziali PTT più realistici
-
-    filtered_ptt = [ptt for ptt in ptt_values if lower_limit <= ptt <= upper_limit]
-    removed_outliers = len(ptt_values) - len(filtered_ptt)
-
-    print(f"[INFO] Removed {removed_outliers} outliers from PTT values.")
-    print(f"[INFO] Final valid PTT values: {filtered_ptt}")
-
-    return np.array(filtered_ptt)
-
-from scipy.stats import iqr
-from scipy.signal import find_peaks
-from scipy.stats import iqr
-import numpy as np
 
 def find_peaks_in_signal(ppg_signal, fps=30, window_size=5, iqr_factor=1.2, output_dir=None, label="signal"):
     """
@@ -554,8 +693,64 @@ def find_peaks_in_signal(ppg_signal, fps=30, window_size=5, iqr_factor=1.2, outp
 
     return valid_peaks
 
+def preprocess_and_filter_signals(signals, sampling_rate, output_dir, label):
+
+    """
+    Preprocessa e filtra i segnali, salvando i risultati in file .txt e .jpg.
+    Rimuove eventuali artefatti finali che superano una soglia di ampiezza.
+
+    :param signals: array monodimensionale con i segnali da preprocessare e filtrare.
+    :param sampling_rate: Frequenza di campionamento.
+    :param output_dir: Directory di output per salvare i risultati.
+    :param label: Etichetta per identificare i file di output.
+    :return: Segnali filtrati (eventualmente troncati se rilevato un artefatto).
+    """
+    # 1. Rimuove le tendenze dal segnale
+    detrended_signals = smoothness_priors_detrend(signals, lambda_param=10)
+    
+    # 2. Applica il filtro passa-banda
+    filtered_signals = butter_bandpass_filter(
+        detrended_signals,
+        lowcut=0.7,
+        highcut=3.0,
+        fs=sampling_rate
+    )
+
+    # 3. Rileva e rimuove un eventuale artefatto finale
+    threshold_factor = 4.0  # Puoi regolare questo valore in base alle tue esigenze
+    mean_val = np.mean(filtered_signals)
+    std_val = np.std(filtered_signals)
+    upper_threshold = mean_val + threshold_factor * std_val
+    lower_threshold = mean_val - threshold_factor * std_val
+
+    # Cerchiamo gli indici in cui il segnale supera la soglia (in alto o in basso)
+    artifact_indices = np.where((filtered_signals > upper_threshold) | (filtered_signals < lower_threshold))[0]
+    if len(artifact_indices) > 0:
+        # Se troviamo un artefatto, tagliamo il segnale dal primo campione anomalo alla fine
+        first_artifact_index = artifact_indices[0]
+        filtered_signals = filtered_signals[:first_artifact_index]
+        print(f"[INFO] Rilevato artefatto oltre la soglia. Segnale troncato a partire dal campione {first_artifact_index}.")
+
+    # 4. Salva i segnali filtrati su file .txt
+    output_file_txt = f"{output_dir}/filtered_signals_{label}.txt"
+    np.savetxt(output_file_txt, filtered_signals, delimiter=",", header="Filtered Signals", comments="")
+    print(f"Segnale filtrato salvato in: {output_file_txt}")
+    
+    # 5. Genera il grafico dei segnali filtrati e salva su file .jpg
+    output_file_jpg = f"{output_dir}/filtered_signals_{label}.jpg"
+    plt.figure(figsize=(10, 4))
+    plt.plot(filtered_signals, label="Filtered Signals")
+    plt.xlabel("Samples")
+    plt.ylabel("Amplitude")
+    plt.title(f"Filtered Signals ({label})")
+    plt.legend()
+    plt.savefig(output_file_jpg)
+    plt.close()
+    print(f"Grafico del segnale filtrato salvato in: {output_file_jpg}")
+    
+    return filtered_signals
+
 # --- FEATURE EXTRACTION FROM CLEANED SIGNAL ---
-import os
 
 def cpu_CHROM(signal, output_dir, label):
     """
@@ -689,9 +884,8 @@ def compute_bvp_green_neck(filtered_green_signal, sampling_rate, output_dir, lab
     
     return bvp, peaks
 
+# --- CALUCLATE PTT ---
 
-from scipy.interpolate import interp1d
-import numpy as np
 def calculate_ptt_cross_correlation(peaks_forehead, peaks_neck, fps, output_dir, label):
     """
     Calcola il Pulse Transit Time (PTT) utilizzando la cross-correlazione tra i segnali binari
@@ -773,9 +967,30 @@ def calculate_ptt_cross_correlation(peaks_forehead, peaks_neck, fps, output_dir,
 
     return ptt_values
 
-import numpy as np
-import os
-import matplotlib.pyplot as plt
+def calculate_ptt_ppg_forehead_neck(peaks_forehead, peaks_neck_ppg, fps, output_dir):
+    """
+    Calcola il Pulse Transit Time (PTT) tra il PPG della fronte e il PPG del collo.
+    """
+    peaks_forehead = np.array(peaks_forehead) / fps
+    peaks_neck_ppg = np.array(peaks_neck_ppg) / fps
+
+    if len(peaks_forehead) == 0 or len(peaks_neck_ppg) == 0:
+        print("[ERROR] No peaks detected in one of the signals!")
+        return np.array([])
+
+    ptt_values = []
+    for t_n in peaks_neck_ppg:
+        t_f_candidates = peaks_forehead[peaks_forehead > t_n]
+
+        if len(t_f_candidates) > 0:
+            t_f = min(t_f_candidates, key=lambda t: abs(t - t_n))
+            ptt_value = t_f - t_n
+            if 0.1 <= ptt_value <= 0.4:
+                ptt_values.append(ptt_value)
+
+    ptt_values = np.array(ptt_values)
+    np.savetxt(os.path.join(output_dir, 'ptt_values_PPG_PPG.txt'), ptt_values, fmt='%.5f')
+    return ptt_values
 
 def calculate_ptt_direct(peaks_forehead, peaks_neck, fps, output_dir, label, signal_neck=None):
     """
@@ -865,6 +1080,92 @@ def calculate_ptt_direct(peaks_forehead, peaks_neck, fps, output_dir, label, sig
 
     return ptt_values
 
+def validate_ptt(ptt_values):
+    lower_limit = 0.08  # Ridotto a 0.08s per non eliminare troppi valori validi
+    upper_limit = 0.4   # Aumentato per includere potenziali PTT più realistici
+
+    filtered_ptt = [ptt for ptt in ptt_values if lower_limit <= ptt <= upper_limit]
+    removed_outliers = len(ptt_values) - len(filtered_ptt)
+
+    print(f"[INFO] Removed {removed_outliers} outliers from PTT values.")
+    print(f"[INFO] Final valid PTT values: {filtered_ptt}")
+
+    return np.array(filtered_ptt)
+
+# --- INTERPOLATION ---
+
+def convolution_interpolation(signal, old_rate, new_rate, output_dir=None, label=""):
+    """
+    Applica l'interpolazione al segnale usando la tecnica di resampling polinomiale.
+    
+    :param signal: array 1D del segnale da interpolare.
+    :param old_rate: frequenza di campionamento originale.
+    :param new_rate: frequenza di campionamento target.
+    :param output_dir: (opzionale) directory in cui salvare il segnale interpolato.
+    :param label: (opzionale) etichetta per identificare il file di output.
+    :return: segnale interpolato.
+    """
+    # Calcola il rapporto di interpolazione come float
+    ratio = new_rate / old_rate
+    # Converte il rapporto in una frazione
+    frac = Fraction(ratio).limit_denominator()
+    up = frac.numerator
+    down = frac.denominator
+
+    print(f"[DEBUG] Interpolation factors for {label}: up = {up}, down = {down}")
+    
+    # Applica l'interpolazione usando resample_poly
+    from scipy.signal import resample_poly
+    interpolated_signal = resample_poly(signal, up, down)
+    
+    # Se viene fornita output_dir, salva il segnale interpolato su file
+    if output_dir is not None:
+        output_file = os.path.join(output_dir, f"interpolated_signal_{label}.txt")
+        np.savetxt(output_file, interpolated_signal, fmt="%.5f")
+        plt.figure(figsize=(10, 4))
+        plt.plot(interpolated_signal, label=f"Interpolated {label}")
+        plt.xlabel("Samples")
+        plt.ylabel("Amplitude")
+        plt.title(f"Interpolated Signal ({label})")
+        plt.legend()
+        plt.savefig(os.path.join(output_dir, f"interpolated_signal_{label}.jpg"))
+        plt.close()
+        print(f"[INFO] Interpolated signal for {label} saved in {output_dir}")
+    
+    return interpolated_signal
+
+def cubic_spline_interpolation(signal, original_fs, target_fs, output_dir=None, label="interpolated"):
+    """
+    Interpola il segnale usando l'interpolazione cubica spline.
+    
+    :param signal: Array del segnale da interpolare.
+    :param original_fs: Frequenza di campionamento originale (in Hz).
+    :param target_fs: Frequenza di campionamento target (in Hz).
+    :param output_dir: Directory in cui salvare il segnale interpolato (opzionale).
+    :param label: Etichetta per identificare il file.
+    :return: Segnale interpolato.
+    """
+    # Crea un vettore di tempi originali
+    original_times = np.arange(len(signal)) / original_fs
+    # Calcola il numero di campioni target
+    target_length = int(len(signal) * target_fs / original_fs)
+    # Genera il vettore di tempi target
+    target_times = np.linspace(original_times[0], original_times[-1], target_length)
+    
+    # Crea l'interpolatore spline
+    cs = CubicSpline(original_times, signal)
+    interpolated_signal = cs(target_times)
+    
+    # Salva il segnale interpolato se viene fornita una directory
+    if output_dir:
+        output_file = os.path.join(output_dir, f"{label}_spline_interpolated.txt")
+        np.savetxt(output_file, interpolated_signal, fmt="%.5f")
+        print(f"[INFO] Segnale interpolato con spline salvato in: {output_file}")
+    
+    return interpolated_signal
+
+# --- Calculate Augmentation Index (AIx) ---
+
 def calculate_aix(bvp_forehead, bvp_neck, peaks_forehead, peaks_neck, fs, output_dir):
     """
     Calcola l'Augmentation Index (AIx) utilizzando i segnali BVP della fronte e del collo.
@@ -934,6 +1235,21 @@ def calculate_aix(bvp_forehead, bvp_neck, peaks_forehead, peaks_neck, fs, output
 
     return aix_values
 
+def calculate_aix_NEW_SIGNAL(signal_data, peaks, notches, output_dir, label):
+    """ Calcola il valore AIx per ogni ciclo cardiaco e salva i risultati in file leggibili """
+    aix_values = []
+    for i in range(len(notches)):
+        if i < len(peaks):
+            p1 = signal_data[peaks[i]]  # Primo picco (onda principale)
+            p2 = signal_data[notches[i]]  # Onda di riflessione (tacca dicrotica)
+            aix = ((p1 - p2) / p1) * 100  # AIx corretto (invertito segno)
+            aix_values.append(aix)
+    
+    # Salva i risultati in file leggibili
+    np.savetxt(os.path.join(output_dir, f'{label}_aix_values.txt'), aix_values, fmt='%.2f')
+    
+    return np.array(aix_values)
+
 def calculate_aix_red(bvp_forehead_red, bvp_neck, peaks_forehead, peaks_neck, fs, output_dir):
     """
     Calcola l'Augmentation Index (AIx) utilizzando il segnale BVP estratto SOLO dal canale ROSSO della fronte
@@ -988,31 +1304,37 @@ def calculate_aix_red(bvp_forehead_red, bvp_neck, peaks_forehead, peaks_neck, fs
     print(f"[INFO] AIx values (red channel) calculated and saved: {aix_values}")
     return aix_values
 
+def segment_and_average(aix_values, timestamps, num_segments=6, output_dir=None, label=""):
+    """ Segmenta il segnale in sei parti e calcola la media dell'AIx per segmento, salvando i risultati in file leggibili """
+    segment_length = len(aix_values) // num_segments
+    segment_means = []
+    if len(aix_values) < num_segments:
+        raise ValueError("Non ci sono abbastanza dati per segmentare correttamente l'AIx")
+    for i in range(num_segments):
+        segment_means.append(np.mean(aix_values[i*segment_length:(i+1)*segment_length]))
+    
+    segment_means = np.array(segment_means)
+    
+    # Salva i risultati in file leggibili
+    if output_dir:
+        np.savetxt(os.path.join(output_dir, f'{label}_aix_segment_means.txt'), segment_means, fmt='%.2f')
+    
+    return segment_means
 
-def calculate_ptt_ppg_forehead_neck(peaks_forehead, peaks_neck_ppg, fps, output_dir):
-    """
-    Calcola il Pulse Transit Time (PTT) tra il PPG della fronte e il PPG del collo.
-    """
-    peaks_forehead = np.array(peaks_forehead) / fps
-    peaks_neck_ppg = np.array(peaks_neck_ppg) / fps
+def compute_aix(signal_ppg, signal_ppw, sampling_rate, timestamps, output_dir, label):
+    """ Calcola AIx medio per segmento dati segnali PPG e PPW e salva i risultati in file leggibili """
+    peaks_ppg, valleys_ppg, notches_ppg = detect_peaks_and_notches(signal_ppg, sampling_rate, output_dir, f'{label}_ppg')
+    peaks_ppw, valleys_ppw, notches_ppw = detect_peaks_and_notches(signal_ppw, sampling_rate, output_dir, f'{label}_ppw')
+    
+    aix_ppg = calculate_aix_NEW_SIGNAL(signal_ppg, peaks_ppg, notches_ppg, output_dir, f'{label}_ppg')
+    aix_ppw = calculate_aix_NEW_SIGNAL(signal_ppw, peaks_ppw, notches_ppw, output_dir, f'{label}_ppw')
+    
+    aix_segments_ppg = segment_and_average(aix_ppg, timestamps, output_dir=output_dir, label=f'{label}_ppg')
+    aix_segments_ppw = segment_and_average(aix_ppw, timestamps, output_dir=output_dir, label=f'{label}_ppw')
+    
+    return aix_segments_ppg, aix_segments_ppw
 
-    if len(peaks_forehead) == 0 or len(peaks_neck_ppg) == 0:
-        print("[ERROR] No peaks detected in one of the signals!")
-        return np.array([])
-
-    ptt_values = []
-    for t_n in peaks_neck_ppg:
-        t_f_candidates = peaks_forehead[peaks_forehead > t_n]
-
-        if len(t_f_candidates) > 0:
-            t_f = min(t_f_candidates, key=lambda t: abs(t - t_n))
-            ptt_value = t_f - t_n
-            if 0.1 <= ptt_value <= 0.4:
-                ptt_values.append(ptt_value)
-
-    ptt_values = np.array(ptt_values)
-    np.savetxt(os.path.join(output_dir, 'ptt_values_PPG_PPG.txt'), ptt_values, fmt='%.5f')
-    return ptt_values
+# --- UTILS ---
 
 def moving_average(data, window_size):
     return np.convolve(data, np.ones(window_size) / window_size, mode='valid')
@@ -1024,6 +1346,43 @@ def interpolate_to_length(values, target_length):
     return interpolated_values
 
 # --- BLOOD PRESSURE ESTIMATION ---
+
+def train_personalized_model(ptt_values, sbp_values, dbp_values):
+    """
+    Allena una regressione lineare per stimare SBP e DBP a partire dai valori PTT,
+    utilizzando i dati reali del soggetto (modello personalizzato).
+
+    :param ptt_values: Array dei valori PTT del soggetto.
+    :param sbp_values: Array dei valori reali di SBP del soggetto.
+    :param dbp_values: Array dei valori reali di DBP del soggetto.
+    :return: Tuple con i coefficienti (a_sbp, b_sbp, a_dbp, b_dbp) tali che:
+             SBP = a_sbp * PTT + b_sbp, DBP = a_dbp * PTT + b_dbp.
+    """
+    # Assicurati che ptt_values, sbp_values e dbp_values abbiano la stessa lunghezza
+    min_length = min(len(ptt_values), len(sbp_values), len(dbp_values))
+    ptt = np.array(ptt_values[:min_length])
+    sbp = np.array(sbp_values[:min_length])
+    dbp = np.array(dbp_values[:min_length])
+
+    # Stampa di debug per verificare i dati di input
+    print(f"[DEBUG] PTT values (length {len(ptt)}): {ptt}")
+    print(f"[DEBUG] SBP values (length {len(sbp)}): {sbp}")
+    print(f"[DEBUG] DBP values (length {len(dbp)}): {dbp}")
+
+    # Utilizziamo np.polyfit per stimare i coefficienti (retta di regressione)
+    a_sbp, b_sbp = np.polyfit(ptt, sbp, 1)
+    a_dbp, b_dbp = np.polyfit(ptt, dbp, 1)
+
+    # Stampa di debug per verificare i coefficienti calcolati
+    print(f"[DEBUG] Coefficienti calcolati per SBP: a_sbp = {a_sbp}, b_sbp = {b_sbp}")
+    print(f"[DEBUG] Coefficienti calcolati per DBP: a_dbp = {a_dbp}, b_dbp = {b_dbp}")
+
+    print(f"[INFO] Personalized model coefficients:")
+    print(f"  SBP: a = {a_sbp:.3f}, b = {b_sbp:.3f}")
+    print(f"  DBP: a = {a_dbp:.3f}, b = {b_dbp:.3f}")
+
+    return a_sbp, b_sbp, a_dbp, b_dbp
+
 def estimate_systolic_blood_pressure(ptt_values, gender):
     if gender == 'male':
         a_sbp = -100  # Coefficiente per la stima della SBP negli uomini
@@ -1051,7 +1410,7 @@ def estimate_diastolic_blood_pressure(ptt_values, gender):
     estimated_dbp = a_dbp * ptt_values + b_dbp
     return estimated_dbp
 
-def estimate_bp_from_aix(aix_values, output_dir):
+def estimate_bp_from_aix(aix_values, gender, output_dir):
     """
     Stima la pressione sanguigna (SBP e DBP) dall'Augmentation Index (AIx) e salva i risultati in output_dir.
     
@@ -1059,9 +1418,15 @@ def estimate_bp_from_aix(aix_values, output_dir):
     :param output_dir: Directory di output per salvare i risultati.
     :return: Tuple con SBP e DBP stimati.
     """
-    # Coefficienti basati su studi medici (da calibrare con dati reali)
-    a_sbp, b_sbp = 0.5, 120
-    a_dbp, b_dbp = 0.3, 80
+    if gender == 'male':
+        a_sbp, b_sbp = 0.5, 120  # Coefficienti per la stima della SBP negli uomini
+        a_dbp, b_dbp = 0.3, 80   # Coefficienti per la stima della DBP negli uomini
+    elif gender == 'female':
+        a_sbp, b_sbp = 0.45, 115  # Coefficienti per la stima della SBP nelle donne
+        a_dbp, b_dbp = 0.28, 75   # Coefficienti per la stima della DBP nelle donne
+    else:
+        raise ValueError("Gender not recognized. Please specify 'male' or 'female'.")
+
 
     estimated_sbp = a_sbp * aix_values + b_sbp
     estimated_dbp = a_dbp * aix_values + b_dbp
@@ -1092,6 +1457,455 @@ def estimate_bp_from_aix(aix_values, output_dir):
     print(f"[INFO] Estimated SBP and DBP (AIx) saved in {output_dir}")
 
     return estimated_sbp, estimated_dbp
+
+def estimate_sbp_from_model(ptt_values, a_sbp, b_sbp):
+    """
+    Stima la SBP a partire dai valori PTT usando i coefficienti appresi.
+    
+    :param ptt_values: Array dei valori PTT.
+    :param a_sbp: Coefficiente della regressione per la SBP.
+    :param b_sbp: Intercetta della regressione per la SBP.
+    :return: Array di SBP stimate.
+    """
+    ptt_values = np.array(ptt_values)
+    return a_sbp * ptt_values + b_sbp
+
+def estimate_dbp_from_model(ptt_values, a_dbp, b_dbp):
+    """
+    Stima la DBP a partire dai valori PTT usando i coefficienti appresi.
+    
+    :param ptt_values: Array dei valori PTT.
+    :param a_dbp: Coefficiente della regressione per la DBP.
+    :param b_dbp: Intercetta della regressione per la DBP.
+    :return: Array di DBP stimate.
+    """
+    ptt_values = np.array(ptt_values)
+    return a_dbp * ptt_values + b_dbp
+
+# --- ANALYSIS ---
+
+def compare_ptt_bp_trends(ptt_dict, bp_systolic, bp_diastolic, output_dir):
+    """
+    Confronta, per ciascun metodo PTT, la stima rispetto ai dati di pressione arteriosa
+    di riferimento (BP). Per ogni metodo calcola:
+      - Correlazione di Pearson tra PTT e SBP
+      - Correlazione di Pearson tra PTT e DBP
+      - MAE e RMSE (calcolati tra le stime BP ottenute tramite regressione lineare sui valori PTT e i BP reali)
+      - Plot Bland-Altman per SBP e DBP
+
+    Si assume che per ciascun metodo PTT siano stati calcolati dei valori BP tramite la funzione di stima (ad es. estimate_systolic_blood_pressure).
+
+    :param ptt_dict: Dizionario dei metodi PTT, es. {'Direct_Conv': ptt_direct_conv, 'Direct_Spline': ptt_direct_spline, ...}
+    :param bp_systolic: Array dei valori SBP di riferimento.
+    :param bp_diastolic: Array dei valori DBP di riferimento.
+    :param output_dir: Directory di output.
+    """
+    import pandas as pd
+    comparisons = []
+    for method_name, ptt_values in ptt_dict.items():
+        ptt_arr = np.array(ptt_values)
+        min_len = min(len(ptt_arr), len(bp_systolic), len(bp_diastolic))
+        ptt_arr = ptt_arr[:min_len]
+        sbp_ref = np.array(bp_systolic)[:min_len]
+        dbp_ref = np.array(bp_diastolic)[:min_len]
+        
+        # Calcola correlazioni
+        corr_sbp, p_sbp = pearsonr(ptt_arr, sbp_ref)
+        corr_dbp, p_dbp = pearsonr(ptt_arr, dbp_ref)
+        
+        # Per confronto via regressione, supponiamo di usare una semplice equazione lineare
+        # (i coefficienti possono essere quelli definiti nelle funzioni di stima)
+        # Qui, ad esempio, stimiamo BP = a * PTT + b, e poi confrontiamo con BP reale.
+        # Definiamo coefficienti arbitrari per l'esempio.
+        a_sbp, b_sbp = -100, 120
+        a_dbp, b_dbp = -75, 80
+        est_sbp = a_sbp * ptt_arr + b_sbp
+        est_dbp = a_dbp * ptt_arr + b_dbp
+
+        mae_sbp = np.mean(np.abs(est_sbp - sbp_ref))
+        rmse_sbp = np.sqrt(np.mean((est_sbp - sbp_ref) ** 2))
+        mae_dbp = np.mean(np.abs(est_dbp - dbp_ref))
+        rmse_dbp = np.sqrt(np.mean((est_dbp - dbp_ref) ** 2))
+        
+        comparisons.append({
+            "Method": method_name,
+            "SBP Pearson r": corr_sbp,
+            "SBP p-value": p_sbp,
+            "SBP MAE": mae_sbp,
+            "SBP RMSE": rmse_sbp,
+            "DBP Pearson r": corr_dbp,
+            "DBP p-value": p_dbp,
+            "DBP MAE": mae_dbp,
+            "DBP RMSE": rmse_dbp
+        })
+        
+        # Bland-Altman Plot per SBP
+        mean_sbp = (est_sbp + sbp_ref) / 2
+        diff_sbp = est_sbp - sbp_ref
+        md_sbp = np.mean(diff_sbp)
+        sd_sbp = np.std(diff_sbp)
+        plt.figure(figsize=(6,5))
+        plt.scatter(mean_sbp, diff_sbp, alpha=0.5)
+        plt.axhline(md_sbp, color='red', linestyle='--', label="Mean Diff")
+        plt.axhline(md_sbp + 1.96 * sd_sbp, color='blue', linestyle='--', label="+1.96 SD")
+        plt.axhline(md_sbp - 1.96 * sd_sbp, color='blue', linestyle='--', label="-1.96 SD")
+        plt.xlabel("Mean SBP (mmHg)")
+        plt.ylabel("Difference (mmHg)")
+        plt.title(f"Bland-Altman SBP: {method_name}")
+        plt.legend()
+        plt.savefig(os.path.join(output_dir, f"bland_altman_SBP_{method_name}.png"))
+        plt.close()
+        
+        # Bland-Altman Plot per DBP
+        mean_dbp = (est_dbp + dbp_ref) / 2
+        diff_dbp = est_dbp - dbp_ref
+        md_dbp = np.mean(diff_dbp)
+        sd_dbp = np.std(diff_dbp)
+        plt.figure(figsize=(6,5))
+        plt.scatter(mean_dbp, diff_dbp, alpha=0.5)
+        plt.axhline(md_dbp, color='red', linestyle='--', label="Mean Diff")
+        plt.axhline(md_dbp + 1.96 * sd_dbp, color='blue', linestyle='--', label="+1.96 SD")
+        plt.axhline(md_dbp - 1.96 * sd_dbp, color='blue', linestyle='--', label="-1.96 SD")
+        plt.xlabel("Mean DBP (mmHg)")
+        plt.ylabel("Difference (mmHg)")
+        plt.title(f"Bland-Altman DBP: {method_name}")
+        plt.legend()
+        plt.savefig(os.path.join(output_dir, f"bland_altman_DBP_{method_name}.png"))
+        plt.close()
+        
+    comp_df = pd.DataFrame(comparisons)
+    comp_csv = os.path.join(output_dir, "ptt_bp_comparisons.csv")
+    comp_df.to_csv(comp_csv, index=False)
+    print(f"[INFO] PTT vs BP trend comparisons saved in {comp_csv}")
+
+def compare_all_ptt_methods(ptt_dict, output_dir):
+    import itertools
+    results = []
+    pairs = list(itertools.combinations(ptt_dict.keys(), 2))
+    for method1, method2 in pairs:
+        ptt1 = np.array(ptt_dict[method1])
+        ptt2 = np.array(ptt_dict[method2])
+        min_len = min(len(ptt1), len(ptt2))
+        ptt1 = ptt1[:min_len]
+        ptt2 = ptt2[:min_len]
+
+        # Verifica che entrambe le liste abbiano almeno 2 elementi
+        if len(ptt1) < 2 or len(ptt2) < 2:
+            print(f"[ERROR] Non ci sono abbastanza valori PTT validi per {method1} e {method2}.")
+            continue
+
+        # Calcola Pearson, MAE, RMSE
+        pearson_r, p_val = pearsonr(ptt1, ptt2)
+        mae = np.mean(np.abs(ptt1 - ptt2))
+        rmse = np.sqrt(np.mean((ptt1 - ptt2)**2))
+        results.append({
+            "Method 1": method1,
+            "Method 2": method2,
+            "Pearson r": pearson_r,
+            "p-value": p_val,
+            "MAE": mae,
+            "RMSE": rmse
+        })
+
+        # Plot Bland-Altman
+        mean_vals = (ptt1 + ptt2) / 2
+        diff_vals = ptt1 - ptt2
+        md = np.mean(diff_vals)
+        sd = np.std(diff_vals)
+        plt.figure(figsize=(6,5))
+        plt.scatter(mean_vals, diff_vals, alpha=0.5)
+        plt.axhline(md, color='red', linestyle='--', label="Mean Diff")
+        plt.axhline(md + 1.96 * sd, color='blue', linestyle='--', label="+1.96 SD")
+        plt.axhline(md - 1.96 * sd, color='blue', linestyle='--', label="-1.96 SD")
+        plt.xlabel("Mean PTT (s)")
+        plt.ylabel("Difference (s)")
+        plt.title(f"Bland-Altman: {method1} vs {method2}")
+        plt.legend()
+        plot_file = os.path.join(output_dir, f"bland_altman_{method1}_vs_{method2}.png")
+        plt.savefig(plot_file)
+        plt.close()
+        print(f"[INFO] Bland-Altman plot saved: {plot_file}")
+
+    # Salva i risultati in un file CSV
+    results_df = pd.DataFrame(results)
+    csv_file = os.path.join(output_dir, "ptt_comparisons.csv")
+    results_df.to_csv(csv_file, index=False)
+    print(f"[INFO] PTT comparisons results saved in: {csv_file}")
+
+def compare_ptt_methods(ptt_cross_corr, ptt_direct, output_dir, label):
+    """
+    Confronta i valori PTT calcolati con il metodo della cross-correlazione e il metodo diretto.
+    
+    :param ptt_cross_corr: Valori PTT calcolati con la cross-correlazione.
+    :param ptt_direct: Valori PTT calcolati con il metodo diretto.
+    :param output_dir: Directory di output per salvare i risultati.
+    :param label: Etichetta per identificare i file di output.
+    """
+    if len(ptt_cross_corr) < 2 or len(ptt_direct) < 2:
+        print(f"[ERROR] Non ci sono abbastanza valori PTT validi per {label}.")
+        return
+
+    # Assicurati che entrambe le liste abbiano la stessa lunghezza
+    min_length = min(len(ptt_cross_corr), len(ptt_direct))
+    ptt_cross_corr = np.array(ptt_cross_corr[:min_length])
+    ptt_direct = np.array(ptt_direct[:min_length])
+
+    # Calcola la correlazione di Pearson
+    correlation, p_value = pearsonr(ptt_cross_corr, ptt_direct)
+    print(f"[INFO] Correlation between Cross-Correlation and Direct PTT ({label}): {correlation:.3f} (p-value: {p_value:.3f})")
+
+    # Genera un grafico scatter per confrontare i due metodi
+    plt.figure(figsize=(10, 6))
+    plt.scatter(ptt_cross_corr, ptt_direct, alpha=0.7, color='blue', label=f"{label}")
+    plt.xlabel("PTT Cross-Correlation (s)")
+    plt.ylabel("PTT Direct (s)")
+    plt.title(f"Comparison of PTT Methods ({label})")
+    plt.legend()
+    plt.grid(True)
+    
+    output_path = os.path.join(output_dir, f"compare_ptt_methods_{label.replace(' ', '_')}.png")
+    plt.savefig(output_path)
+    plt.close()
+    print(f"[INFO] Comparison plot saved in {output_path}")
+
+def compare_bp_estimations_with_real(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, estimated_sbp_aix_red, estimated_dbp_aix_red, estimated_sbp_personalized, estimated_dbp_personalized, real_sbp, real_dbp, output_dir, label_suffix=""):
+    """
+    Confronta le stime della pressione sanguigna (SBP e DBP) con i valori reali calcolando
+    il coefficiente di correlazione di Pearson, MAE e RMSE.
+
+    Salva i risultati e genera un grafico della matrice di correlazione.
+    """
+    print(f"\n[INFO] Comparing Blood Pressure Estimations with Real Values ({label_suffix})...")
+
+    # Trova la lunghezza minima tra tutti i dati per uniformare
+    min_length = min(len(estimated_sbp_ppg), len(estimated_dbp_ppg), len(estimated_sbp_ppw), len(estimated_dbp_ppw), len(estimated_sbp_aix), len(estimated_dbp_aix), len(estimated_sbp_aix_red), len(estimated_dbp_aix_red), len(estimated_sbp_personalized), len(estimated_dbp_personalized), len(real_sbp), len(real_dbp))
+
+    # Verifica che ci siano abbastanza dati per il confronto
+    if min_length < 2:
+        print(f"[ERROR] Not enough data for comparison ({label_suffix}).")
+        print(f"[DEBUG] Lengths: estimated_sbp_ppg={len(estimated_sbp_ppg)}, estimated_dbp_ppg={len(estimated_dbp_ppg)}, estimated_sbp_ppw={len(estimated_sbp_ppw)}, estimated_dbp_ppw={len(estimated_dbp_ppw)}, estimated_sbp_aix={len(estimated_sbp_aix)}, estimated_dbp_aix={len(estimated_dbp_aix)}, estimated_sbp_aix_red={len(estimated_sbp_aix_red)}, estimated_dbp_aix_red={len(estimated_dbp_aix_red)}, estimated_sbp_personalized={len(estimated_sbp_personalized)}, estimated_dbp_personalized={len(estimated_dbp_personalized)}, real_sbp={len(real_sbp)}, real_dbp={len(real_dbp)}")
+        return
+
+    # Tronca le liste alla lunghezza minima per allineare i dati
+    estimated_sbp_ppg = estimated_sbp_ppg[:min_length]
+    estimated_dbp_ppg = estimated_dbp_ppg[:min_length]
+    estimated_sbp_ppw = estimated_sbp_ppw[:min_length]
+    estimated_dbp_ppw = estimated_dbp_ppw[:min_length]
+    estimated_sbp_aix = estimated_sbp_aix[:min_length]
+    estimated_dbp_aix = estimated_dbp_aix[:min_length]
+    estimated_sbp_aix_red = estimated_sbp_aix_red[:min_length]
+    estimated_dbp_aix_red = estimated_dbp_aix_red[:min_length]
+    estimated_sbp_personalized = estimated_sbp_personalized[:min_length]
+    estimated_dbp_personalized = estimated_dbp_personalized[:min_length]
+    real_sbp = real_sbp[:min_length]
+    real_dbp = real_dbp[:min_length]
+
+    # Creazione DataFrame per analisi
+    data = {
+        "Real_SBP": real_sbp,
+        "Real_DBP": real_dbp,
+        "Estimated_SBP_PPG": estimated_sbp_ppg,
+        "Estimated_DBP_PPG": estimated_dbp_ppg,
+        "Estimated_SBP_PPW": estimated_sbp_ppw,
+        "Estimated_DBP_PPW": estimated_dbp_ppw,
+        "Estimated_SBP_AIx": estimated_sbp_aix,
+        "Estimated_DBP_AIx": estimated_dbp_aix,
+        "Estimated_SBP_AIx_Red": estimated_sbp_aix_red,
+        "Estimated_DBP_AIx_Red": estimated_dbp_aix_red,
+        "Estimated_SBP_Personalized": estimated_sbp_personalized,
+        "Estimated_DBP_Personalized": estimated_dbp_personalized,
+    }
+
+    df = pd.DataFrame(data)
+
+    # Calcola le correlazioni di Pearson, MAE e RMSE
+    comparison_results = {}
+    comparisons = [
+        ("Real_SBP", "Estimated_SBP_PPG"),
+        ("Real_DBP", "Estimated_DBP_PPG"),
+        ("Real_SBP", "Estimated_SBP_PPW"),
+        ("Real_DBP", "Estimated_DBP_PPW"),
+        ("Real_SBP", "Estimated_SBP_AIx"),
+        ("Real_DBP", "Estimated_DBP_AIx"),
+        ("Real_SBP", "Estimated_SBP_AIx_Red"),
+        ("Real_DBP", "Estimated_DBP_AIx_Red"),
+        ("Real_SBP", "Estimated_SBP_Personalized"),
+        ("Real_DBP", "Estimated_DBP_Personalized"),
+    ]
+
+    for real_col, est_col in comparisons:
+        if len(df[real_col]) >= 2 and len(df[est_col]) >= 2:
+            r_value, p_value = pearsonr(df[real_col], df[est_col])
+            mae = np.mean(np.abs(df[real_col] - df[est_col]))
+            rmse = np.sqrt(np.mean((df[real_col] - df[est_col]) ** 2))
+            comparison_results[f"{real_col} vs {est_col}"] = {"Pearson r": r_value, "p-value": p_value, "MAE": mae, "RMSE": rmse}
+        else:
+            print(f"[WARNING] Length of {real_col} or {est_col} is less than 2. Skipping comparison.")
+
+    # Converti i risultati in DataFrame e salva
+    comparison_df = pd.DataFrame.from_dict(comparison_results, orient='index')
+    comparison_csv_path = os.path.join(output_dir, f"comparison_results_with_real{label_suffix}.csv")
+    comparison_df.to_csv(comparison_csv_path)
+    print(f"[INFO] Comparison results with real values saved to {comparison_csv_path}.")
+
+    # Matrice di correlazione
+    correlation_matrix = df.corr()
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
+    plt.title(f"Correlation Matrix of BP Estimations with Real Values ({label_suffix})")
+    correlation_matrix_path = os.path.join(output_dir, f"correlation_matrix_with_real{label_suffix}.png")
+    plt.savefig(correlation_matrix_path)
+    plt.close()
+    print(f"[INFO] Correlation matrix plot saved to {correlation_matrix_path}.")
+
+    print(f"[INFO] Blood pressure estimation comparison with real values completed ({label_suffix}).")
+
+def correlate_bp_ptt(ptt_values, bp_values, label):
+    """
+    Calcola la correlazione di Pearson tra PTT e pressione sanguigna.
+    """
+    if len(ptt_values) == 0 or len(bp_values) == 0:
+        print(f"[ERROR] Nessun valore PTT o BP valido per {label}!")
+        return None
+
+    min_length = min(len(ptt_values), len(bp_values))
+    ptt_values = ptt_values[:min_length]
+    bp_values = bp_values[:min_length]
+
+    # Verifica se gli array sono costanti
+    if np.all(ptt_values == ptt_values[0]) or np.all(bp_values == bp_values[0]):
+        print(f"[ERROR] Input costante per {label}. La correlazione non è definita.")
+        return None
+
+    correlation, p_value = pearsonr(ptt_values, bp_values)
+    print(f"[INFO] Correlazione tra PTT e {label}: {correlation:.3f} (p-value: {p_value:.3f})")
+    return correlation
+
+def compare_aix_estimations_with_real(estimated_sbp_aix, estimated_dbp_aix, estimated_sbp_aix_red, estimated_dbp_aix_red, real_sbp, real_dbp, output_dir, label_suffix=""):
+    """
+    Confronta le stime della pressione sanguigna (SBP e DBP) ottenute con AIx e AIx Red con i valori reali calcolando
+    il coefficiente di correlazione di Pearson.
+
+    Salva i risultati e genera un grafico della matrice di correlazione.
+    """
+    print(f"\n[INFO] Comparing AIx Blood Pressure Estimations with Real Values ({label_suffix})...")
+
+    # Trova la lunghezza minima tra tutti i dati per uniformare
+    min_length = min(len(estimated_sbp_aix), len(estimated_dbp_aix), len(estimated_sbp_aix_red), len(estimated_dbp_aix_red), len(real_sbp), len(real_dbp))
+
+    # Verifica che ci siano abbastanza dati per il confronto
+    if min_length < 2:
+        print(f"[ERROR] Not enough data for comparison ({label_suffix}).")
+        print(f"[DEBUG] Lengths: estimated_sbp_aix={len(estimated_sbp_aix)}, estimated_dbp_aix={len(estimated_dbp_aix)}, estimated_sbp_aix_red={len(estimated_sbp_aix_red)}, estimated_dbp_aix_red={len(estimated_dbp_aix_red)}, real_sbp={len(real_sbp)}, real_dbp={len(real_dbp)}")
+        return
+
+    # Tronca le liste alla lunghezza minima per allineare i dati
+    estimated_sbp_aix = estimated_sbp_aix[:min_length]
+    estimated_dbp_aix = estimated_dbp_aix[:min_length]
+    estimated_sbp_aix_red = estimated_sbp_aix_red[:min_length]
+    estimated_dbp_aix_red = estimated_dbp_aix_red[:min_length]
+    real_sbp = real_sbp[:min_length]
+    real_dbp = real_dbp[:min_length]
+
+    # Creazione DataFrame per analisi
+    data = {
+        "Real_SBP": real_sbp,
+        "Real_DBP": real_dbp,
+        "Estimated_SBP_AIx": estimated_sbp_aix,
+        "Estimated_DBP_AIx": estimated_dbp_aix,
+        "Estimated_SBP_AIx_Red": estimated_sbp_aix_red,
+        "Estimated_DBP_AIx_Red": estimated_dbp_aix_red,
+    }
+
+    df = pd.DataFrame(data)
+
+    # Calcola le correlazioni di Pearson
+    correlation_results = {}
+    comparisons = [
+        ("Real_SBP", "Estimated_SBP_AIx"),
+        ("Real_DBP", "Estimated_DBP_AIx"),
+        ("Real_SBP", "Estimated_SBP_AIx_Red"),
+        ("Real_DBP", "Estimated_DBP_AIx_Red"),
+    ]
+
+    for real_col, est_col in comparisons:
+        if len(df[real_col]) >= 2 and len(df[est_col]) >= 2:
+            r_value, p_value = pearsonr(df[real_col], df[est_col])
+            correlation_results[f"{real_col} vs {est_col}"] = {"Pearson r": r_value, "p-value": p_value}
+        else:
+            print(f"[WARNING] Length of {real_col} or {est_col} is less than 2. Skipping correlation calculation.")
+
+    # Converti i risultati in DataFrame e salva
+    correlation_df = pd.DataFrame.from_dict(correlation_results, orient='index')
+    correlation_csv_path = os.path.join(output_dir, f"pearson_correlation_results_aix{label_suffix}.csv")
+    correlation_df.to_csv(correlation_csv_path)
+    print(f"[INFO] Pearson correlation results saved to {correlation_csv_path}.")
+
+    # Matrice di correlazione
+    correlation_matrix = df.corr()
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
+    plt.title(f"Correlation Matrix of AIx BP Estimations with Real Values ({label_suffix})")
+    correlation_matrix_path = os.path.join(output_dir, f"correlation_matrix_aix_with_real{label_suffix}.png")
+    plt.savefig(correlation_matrix_path)
+    plt.close()
+    print(f"[INFO] Correlation matrix plot saved to {correlation_matrix_path}.")
+
+def evaluate_estimations(estimated_bp, real_bp, method_name, output_dir):
+    """
+    Valuta l'accuratezza delle stime della pressione sanguigna rispetto ai valori reali.
+    Calcola MAE, RMSE e Pearson correlation e genera il Bland-Altman plot.
+    """
+    if len(estimated_bp) == 0 or len(real_bp) == 0:
+        print(f"[ERROR] Dati mancanti per {method_name}. Salto il calcolo.")
+        return
+
+    # Assicurarsi che entrambe le liste abbiano la stessa lunghezza
+    min_length = min(len(estimated_bp), len(real_bp))
+    estimated_bp = np.array(estimated_bp[:min_length])
+    real_bp = np.array(real_bp[:min_length])
+
+    # 1️⃣ MAE - Mean Absolute Error
+    mae = np.mean(np.abs(estimated_bp - real_bp))
+
+    # 2️⃣ RMSE - Root Mean Squared Error
+    rmse = np.sqrt(np.mean((estimated_bp - real_bp) ** 2))
+
+    # 3️⃣ Pearson Correlation
+    correlation, p_value = pearsonr(estimated_bp, real_bp)
+
+    # 4️⃣ Bland-Altman Plot
+    mean_bp = (estimated_bp + real_bp) / 2
+    diff_bp = estimated_bp - real_bp  # Differenza tra stima e valore reale
+    mean_diff = np.mean(diff_bp)
+    std_diff = np.std(diff_bp)
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(mean_bp, diff_bp, color='blue', alpha=0.5, label=method_name)
+    plt.axhline(mean_diff, color='red', linestyle='--', label="Mean Diff")
+    plt.axhline(mean_diff + 1.96 * std_diff, color='black', linestyle='dotted', label="+1.96 SD")
+    plt.axhline(mean_diff - 1.96 * std_diff, color='black', linestyle='dotted', label="-1.96 SD")
+    plt.xlabel("Mean BP (mmHg)")
+    plt.ylabel("Difference (Estimated - Real) (mmHg)")
+    plt.title(f"Bland-Altman Plot - {method_name}")
+    plt.legend()
+    plt.grid()
+    
+    # Salva il grafico
+    output_path = f"{output_dir}/bland_altman_{method_name}.png"
+    plt.savefig(output_path)
+    plt.close()
+    print(f"[INFO] Bland-Altman Plot salvato in {output_path}")
+
+    # Stampa i risultati
+    print(f"\n[RESULTS] {method_name}")
+    print(f"MAE: {mae:.2f} mmHg")
+    print(f"RMSE: {rmse:.2f} mmHg")
+    print(f"Pearson Correlation: {correlation:.2f} (p-value: {p_value:.3f})")
+
+    return mae, rmse, correlation, p_value
+
+#--- STATISTICAL ANALYSIS ---
 
 def analyze_bp_methods(estimated_sbp_ppg, estimated_dbp_ppg, 
                         estimated_sbp_ppw, estimated_dbp_ppw, 
@@ -1288,7 +2102,7 @@ def bland_altman_results(estimated_sbp, real_sbp, estimated_dbp, real_dbp, outpu
     df.to_csv(os.path.join(output_dir, "bland_altman_results.csv"), index=False)
 
     print(f"[INFO] Bland-Altman results saved to {output_dir}/bland_altman_results.csv")
-# Modifica della funzione `evaluate_estimations` per includere i risultati nel CSV
+
 def evaluate_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, real_sbp, real_dbp, output_dir):
     """
     Valuta l'accuratezza delle stime della pressione sanguigna rispetto ai valori reali.
@@ -1324,88 +2138,8 @@ def evaluate_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw
 
     return bland_altman_results_df
 
-
-import os
-import numpy as np
-from scipy.signal import resample_poly
-from scipy.interpolate import CubicSpline
-from scipy.signal import resample_poly
-from fractions import Fraction
-import numpy as np
-import os
-import matplotlib.pyplot as plt
-
-def convolution_interpolation(signal, old_rate, new_rate, output_dir=None, label=""):
-    """
-    Applica l'interpolazione al segnale usando la tecnica di resampling polinomiale.
-    
-    :param signal: array 1D del segnale da interpolare.
-    :param old_rate: frequenza di campionamento originale.
-    :param new_rate: frequenza di campionamento target.
-    :param output_dir: (opzionale) directory in cui salvare il segnale interpolato.
-    :param label: (opzionale) etichetta per identificare il file di output.
-    :return: segnale interpolato.
-    """
-    # Calcola il rapporto di interpolazione come float
-    ratio = new_rate / old_rate
-    # Converte il rapporto in una frazione
-    frac = Fraction(ratio).limit_denominator()
-    up = frac.numerator
-    down = frac.denominator
-
-    print(f"[DEBUG] Interpolation factors for {label}: up = {up}, down = {down}")
-    
-    # Applica l'interpolazione usando resample_poly
-    from scipy.signal import resample_poly
-    interpolated_signal = resample_poly(signal, up, down)
-    
-    # Se viene fornita output_dir, salva il segnale interpolato su file
-    if output_dir is not None:
-        output_file = os.path.join(output_dir, f"interpolated_signal_{label}.txt")
-        np.savetxt(output_file, interpolated_signal, fmt="%.5f")
-        plt.figure(figsize=(10, 4))
-        plt.plot(interpolated_signal, label=f"Interpolated {label}")
-        plt.xlabel("Samples")
-        plt.ylabel("Amplitude")
-        plt.title(f"Interpolated Signal ({label})")
-        plt.legend()
-        plt.savefig(os.path.join(output_dir, f"interpolated_signal_{label}.jpg"))
-        plt.close()
-        print(f"[INFO] Interpolated signal for {label} saved in {output_dir}")
-    
-    return interpolated_signal
-
-def cubic_spline_interpolation(signal, original_fs, target_fs, output_dir=None, label="interpolated"):
-    """
-    Interpola il segnale usando l'interpolazione cubica spline.
-    
-    :param signal: Array del segnale da interpolare.
-    :param original_fs: Frequenza di campionamento originale (in Hz).
-    :param target_fs: Frequenza di campionamento target (in Hz).
-    :param output_dir: Directory in cui salvare il segnale interpolato (opzionale).
-    :param label: Etichetta per identificare il file.
-    :return: Segnale interpolato.
-    """
-    # Crea un vettore di tempi originali
-    original_times = np.arange(len(signal)) / original_fs
-    # Calcola il numero di campioni target
-    target_length = int(len(signal) * target_fs / original_fs)
-    # Genera il vettore di tempi target
-    target_times = np.linspace(original_times[0], original_times[-1], target_length)
-    
-    # Crea l'interpolatore spline
-    cs = CubicSpline(original_times, signal)
-    interpolated_signal = cs(target_times)
-    
-    # Salva il segnale interpolato se viene fornita una directory
-    if output_dir:
-        output_file = os.path.join(output_dir, f"{label}_spline_interpolated.txt")
-        np.savetxt(output_file, interpolated_signal, fmt="%.5f")
-        print(f"[INFO] Segnale interpolato con spline salvato in: {output_file}")
-    
-    return interpolated_signal
-
 # --- DATA VISUALIZATION AND SAVING ---
+
 def plot_ppg_signal(ppg_signal, label, output_dir):
     plt.figure(figsize=(10, 4))
     plt.plot(ppg_signal, label=label)
@@ -1473,8 +2207,6 @@ def plot_estimated_blood_pressure_scatter(estimated_sbp, estimated_dbp, output_d
 
     print(f"Estimated blood pressure scatter graph saved at: {output_path}")
 
-import matplotlib.pyplot as plt
-
 def plot_peak_synchronization(forehead_peaks, neck_peaks, signal_forehead, signal_neck, fps, output_dir):
     """
     Genera un'immagine per visualizzare se i picchi dei segnali della fronte e del collo sono sincronizzati.
@@ -1519,212 +2251,29 @@ def plot_peak_synchronization(forehead_peaks, neck_peaks, signal_forehead, signa
 
     print(f"[INFO] Peak synchronization plot saved in: {output_path}")
 
+def plot_ptt_vs_bp(ptt_values, bp_values, label, output_dir):
+    """
+    Crea un grafico scatter per visualizzare la correlazione tra PTT e pressione sanguigna.
+    """
+    min_length = min(len(ptt_values), len(bp_values))
+    ptt_values = ptt_values[:min_length]
+    bp_values = bp_values[:min_length]
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(ptt_values, bp_values, alpha=0.7, color='blue', label=f"{label}")
+    plt.xlabel("Pulse Transit Time (PTT) [s]")
+    plt.ylabel("Blood Pressure (mmHg)")
+    plt.title(f"Correlazione tra PTT e {label}")
+    plt.legend()
+    plt.grid(True)
+    
+    output_path = os.path.join(output_dir, f"ptt_vs_{label.replace(' ', '_')}.png")
+    plt.savefig(output_path)
+    plt.close()
+    print(f"[INFO] Grafico salvato in {output_path}")
+
 def save_estimated_bp(bp_values, label, output_dir):
     np.savetxt(os.path.join(output_dir, f'estimated_{label.lower()}.txt'), bp_values, fmt='%.2f')
-
-# --- MAIN --- 
-def initialize_paths_and_config():
-    print("\n[INFO] Initializing paths and configurations...")
-    dataset_folder = "/Volumes/DanoUSB"
-    subject = "M005"
-    task = "T1"
-    gender = "male"
-    video_path = f"{dataset_folder}/{subject}/{task}/vid.avi"
-    output_dir = f"NIAC/{subject}/{task}"
-    neck_roi_file_path = f"{output_dir}/neck_roi_dimensions.json"
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"[INFO] Output directory: {output_dir}")
-    return video_path, output_dir, neck_roi_file_path, gender
-
-def calculate_roi(video_path, neck_roi_file_path, output_roi_path):
-
-    """
-    Seleziona o carica la ROI iniziale e poi applica il tracking adattivo per aggiornarla frame dopo frame.
-    
-    :param video_path: Percorso del video da analizzare.
-    :param neck_roi_file_path: Percorso del file JSON in cui salvare/caricare la ROI iniziale.
-    :param output_roi_path: Percorso del file JSON in cui salvare/caricare le ROI aggiornate dal tracking.
-    :return: Ultima ROI tracciata (x, y, width, height)
-    """
-    print("\n[STEP 1] Calculating ROI with tracking...")
-
-    # Se esiste già un file con tutto il tracking adattivo, lo carica
-    if os.path.exists(output_roi_path):
-        with open(output_roi_path, 'r') as file:
-            roi_updates = json.load(file)
-        print(f"[INFO] Loaded adaptive tracking data from {output_roi_path}")
-        last_roi = roi_updates[-1]
-        return (last_roi['x'], last_roi['y'], last_roi['width'], last_roi['height'])
-
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video file: {video_path}")
-    ret, frame = cap.read()
-    cap.release()
-
-    if not ret:
-        print("[ERROR] Could not read frame from video.")
-        return None
-
-    # Se esiste una ROI salvata, la carica, altrimenti chiede la selezione manuale
-    if os.path.exists(neck_roi_file_path):
-        neck_roi = load_roi_dimensions(neck_roi_file_path)
-        print(f"[INFO] Neck ROI loaded from file: {neck_roi}")
-    else:
-        print("[INFO] Select neck ROI manually.")
-        neck_roi = select_neck_roi(frame)
-        save_roi_dimensions(neck_roi, neck_roi_file_path)
-        print(f"[INFO] Neck ROI saved to file: {neck_roi}")
-
-    # Controlla se la ROI è valida
-    if not neck_roi or len(neck_roi) != 4 or neck_roi[2] <= 0 or neck_roi[3] <= 0:
-        print("[ERROR] Invalid ROI. Check ROI selection.")
-        return None
-
-    # Avvia il tracking adattivo della ROI
-    roi_updates = track_neck_roi(video_path, neck_roi_file_path, output_roi_path)
-
-    if not roi_updates:
-        print("[ERROR] Tracking failed, no ROIs saved!")
-        return None
-
-    # Restituisce l'ultima ROI tracciata
-    last_roi = roi_updates[-1]
-    return (last_roi['x'], last_roi['y'], last_roi['width'], last_roi['height'])
-
-def process_ppg_forehead(video_path, output_dir):
-    print("\n[STEP 2] Processing forehead PPG...")
-    rgb_signals = extract_rgb_trace_MediaPipe(video_path, output_dir)
-    # Convertiamo i segnali in array numpy separati per ciascun canale
-    R = np.array(rgb_signals['R'])
-    G = np.array(rgb_signals['G'])
-    B = np.array(rgb_signals['B'])
-    
-    # Verifica che ciascun tracciato abbia almeno 28 campioni
-    min_samples = 28
-    if R.shape[0] < min_samples:
-        needed = min_samples - R.shape[0]
-        R = np.concatenate((R, np.repeat(R[-1:], needed, axis=0)), axis=0)
-        G = np.concatenate((G, np.repeat(G[-1:], needed, axis=0)), axis=0)
-        B = np.concatenate((B, np.repeat(B[-1:], needed, axis=0)), axis=0)
-        print(f"[WARNING] Forehead signal had less than 28 samples. Extended to {R.shape[0]} samples.")
-    
-    print("[INFO] Forehead RGB signals extracted successfully.")
-    return R, G, B
-
-def process_ppg_neck(video_path, neck_roi, output_dir):
-    print("\n[STEP 3] Processing neck PPG...")
-
-    if neck_roi is None or len(neck_roi) != 4:
-        print("[ERROR] Invalid Neck ROI. Check ROI selection.")
-        return None
-    
-    x, y, w, h = neck_roi
-    if w <= 0 or h <= 0:
-        print(f"[ERROR] Invalid ROI dimensions: {neck_roi}")
-        return None
-
-    print(f"[INFO] Using Neck ROI: x={x}, y={y}, w={w}, h={h}")
-
-    cap = cv2.VideoCapture(video_path)
-    ret, image = cap.read()
-    if not ret:
-        print("[ERROR] Could not read the first frame of the video.")
-        return None
-    cap.release()
-
-
-    rgb_signals = extract_rgb_trace(video_path, neck_roi, output_dir, "Neck")
-
-    print("[DEBUG] Extracted RGB signals for Neck")
-
-    if len(rgb_signals['R']) == 0 or len(rgb_signals['G']) == 0:
-        print("[ERROR] No valid RGB data extracted from Neck.")
-        return None
-
-    red_signal = np.array(rgb_signals['R'])
-    green_signal = np.array(rgb_signals['G'])
-
-    print(f"[DEBUG] Red signal shape: {red_signal.shape}, Green signal shape: {green_signal.shape}")
-
-    if red_signal.shape[0] < 5 or green_signal.shape[0] < 5:
-        print(f"[ERROR] Signals are too short! Red: {red_signal.shape[0]}, Green: {green_signal.shape[0]}")
-        return None
-
-    mean_rg_signal = np.vstack((red_signal, green_signal)).T  # Combine R and G into a 2D array
-
-    print(f"[DEBUG] Mean R+G signal shape: {mean_rg_signal.shape}")
-
-    if mean_rg_signal.shape[0] < 28:
-        needed = 28 - mean_rg_signal.shape[0]
-        last_samples = mean_rg_signal[-1:].repeat(needed, axis=0)
-        mean_rg_signal = np.vstack((mean_rg_signal, last_samples))
-        print(f"[WARNING] Neck signal had less than 28 samples. Extended to {mean_rg_signal.shape[0]} samples.")
-
-    return mean_rg_signal
-
-def calculate_ppw_neck(video_path, neck_roi, output_dir):
-    print("\n[STEP 4] Calculating neck PPW...")
-    ppw_signal = extract_pixflow_signal_improved(video_path, neck_roi, output_dir, "Neck")
-    print("[INFO] Neck PPW signal extracted successfully.")
-    return ppw_signal
-
-def preprocess_and_filter_signals(signals, sampling_rate, output_dir, label):
-
-    """
-    Preprocessa e filtra i segnali, salvando i risultati in file .txt e .jpg.
-    Rimuove eventuali artefatti finali che superano una soglia di ampiezza.
-
-    :param signals: array monodimensionale con i segnali da preprocessare e filtrare.
-    :param sampling_rate: Frequenza di campionamento.
-    :param output_dir: Directory di output per salvare i risultati.
-    :param label: Etichetta per identificare i file di output.
-    :return: Segnali filtrati (eventualmente troncati se rilevato un artefatto).
-    """
-    # 1. Rimuove le tendenze dal segnale
-    detrended_signals = smoothness_priors_detrend(signals, lambda_param=10)
-    
-    # 2. Applica il filtro passa-banda
-    filtered_signals = butter_bandpass_filter(
-        detrended_signals,
-        lowcut=0.7,
-        highcut=3.0,
-        fs=sampling_rate
-    )
-
-    # 3. Rileva e rimuove un eventuale artefatto finale
-    threshold_factor = 4.0  # Puoi regolare questo valore in base alle tue esigenze
-    mean_val = np.mean(filtered_signals)
-    std_val = np.std(filtered_signals)
-    upper_threshold = mean_val + threshold_factor * std_val
-    lower_threshold = mean_val - threshold_factor * std_val
-
-    # Cerchiamo gli indici in cui il segnale supera la soglia (in alto o in basso)
-    artifact_indices = np.where((filtered_signals > upper_threshold) | (filtered_signals < lower_threshold))[0]
-    if len(artifact_indices) > 0:
-        # Se troviamo un artefatto, tagliamo il segnale dal primo campione anomalo alla fine
-        first_artifact_index = artifact_indices[0]
-        filtered_signals = filtered_signals[:first_artifact_index]
-        print(f"[INFO] Rilevato artefatto oltre la soglia. Segnale troncato a partire dal campione {first_artifact_index}.")
-
-    # 4. Salva i segnali filtrati su file .txt
-    output_file_txt = f"{output_dir}/filtered_signals_{label}.txt"
-    np.savetxt(output_file_txt, filtered_signals, delimiter=",", header="Filtered Signals", comments="")
-    print(f"Segnale filtrato salvato in: {output_file_txt}")
-    
-    # 5. Genera il grafico dei segnali filtrati e salva su file .jpg
-    output_file_jpg = f"{output_dir}/filtered_signals_{label}.jpg"
-    plt.figure(figsize=(10, 4))
-    plt.plot(filtered_signals, label="Filtered Signals")
-    plt.xlabel("Samples")
-    plt.ylabel("Amplitude")
-    plt.title(f"Filtered Signals ({label})")
-    plt.legend()
-    plt.savefig(output_file_jpg)
-    plt.close()
-    print(f"Grafico del segnale filtrato salvato in: {output_file_jpg}")
-    
-    return filtered_signals
 
 def save_and_visualize_results(bvp_forehead, bvp_neck, forehead_peaks, neck_peaks, ptt, estimated_sbp, estimated_dbp, output_dir, label="PTT"):
     """
@@ -1759,417 +2308,24 @@ def calculate_coefficients(ptt_values, bp_values):
     print(f"[INFO] Coefficienti calcolati: a = {a:.3f}, b = {b:.3f}")
     return a, b
 
-
-from scipy.stats import pearsonr
-
-def compare_ptt_bp_trends(ptt_dict, bp_systolic, bp_diastolic, output_dir):
-    """
-    Confronta, per ciascun metodo PTT, la stima rispetto ai dati di pressione arteriosa
-    di riferimento (BP). Per ogni metodo calcola:
-      - Correlazione di Pearson tra PTT e SBP
-      - Correlazione di Pearson tra PTT e DBP
-      - MAE e RMSE (calcolati tra le stime BP ottenute tramite regressione lineare sui valori PTT e i BP reali)
-      - Plot Bland-Altman per SBP e DBP
-
-    Si assume che per ciascun metodo PTT siano stati calcolati dei valori BP tramite la funzione di stima (ad es. estimate_systolic_blood_pressure).
-
-    :param ptt_dict: Dizionario dei metodi PTT, es. {'Direct_Conv': ptt_direct_conv, 'Direct_Spline': ptt_direct_spline, ...}
-    :param bp_systolic: Array dei valori SBP di riferimento.
-    :param bp_diastolic: Array dei valori DBP di riferimento.
-    :param output_dir: Directory di output.
-    """
-    import pandas as pd
-    comparisons = []
-    for method_name, ptt_values in ptt_dict.items():
-        ptt_arr = np.array(ptt_values)
-        min_len = min(len(ptt_arr), len(bp_systolic), len(bp_diastolic))
-        ptt_arr = ptt_arr[:min_len]
-        sbp_ref = np.array(bp_systolic)[:min_len]
-        dbp_ref = np.array(bp_diastolic)[:min_len]
-        
-        # Calcola correlazioni
-        corr_sbp, p_sbp = pearsonr(ptt_arr, sbp_ref)
-        corr_dbp, p_dbp = pearsonr(ptt_arr, dbp_ref)
-        
-        # Per confronto via regressione, supponiamo di usare una semplice equazione lineare
-        # (i coefficienti possono essere quelli definiti nelle funzioni di stima)
-        # Qui, ad esempio, stimiamo BP = a * PTT + b, e poi confrontiamo con BP reale.
-        # Definiamo coefficienti arbitrari per l'esempio.
-        a_sbp, b_sbp = -100, 120
-        a_dbp, b_dbp = -75, 80
-        est_sbp = a_sbp * ptt_arr + b_sbp
-        est_dbp = a_dbp * ptt_arr + b_dbp
-
-        mae_sbp = np.mean(np.abs(est_sbp - sbp_ref))
-        rmse_sbp = np.sqrt(np.mean((est_sbp - sbp_ref) ** 2))
-        mae_dbp = np.mean(np.abs(est_dbp - dbp_ref))
-        rmse_dbp = np.sqrt(np.mean((est_dbp - dbp_ref) ** 2))
-        
-        comparisons.append({
-            "Method": method_name,
-            "SBP Pearson r": corr_sbp,
-            "SBP p-value": p_sbp,
-            "SBP MAE": mae_sbp,
-            "SBP RMSE": rmse_sbp,
-            "DBP Pearson r": corr_dbp,
-            "DBP p-value": p_dbp,
-            "DBP MAE": mae_dbp,
-            "DBP RMSE": rmse_dbp
-        })
-        
-        # Bland-Altman Plot per SBP
-        mean_sbp = (est_sbp + sbp_ref) / 2
-        diff_sbp = est_sbp - sbp_ref
-        md_sbp = np.mean(diff_sbp)
-        sd_sbp = np.std(diff_sbp)
-        plt.figure(figsize=(6,5))
-        plt.scatter(mean_sbp, diff_sbp, alpha=0.5)
-        plt.axhline(md_sbp, color='red', linestyle='--', label="Mean Diff")
-        plt.axhline(md_sbp + 1.96 * sd_sbp, color='blue', linestyle='--', label="+1.96 SD")
-        plt.axhline(md_sbp - 1.96 * sd_sbp, color='blue', linestyle='--', label="-1.96 SD")
-        plt.xlabel("Mean SBP (mmHg)")
-        plt.ylabel("Difference (mmHg)")
-        plt.title(f"Bland-Altman SBP: {method_name}")
-        plt.legend()
-        plt.savefig(os.path.join(output_dir, f"bland_altman_SBP_{method_name}.png"))
-        plt.close()
-        
-        # Bland-Altman Plot per DBP
-        mean_dbp = (est_dbp + dbp_ref) / 2
-        diff_dbp = est_dbp - dbp_ref
-        md_dbp = np.mean(diff_dbp)
-        sd_dbp = np.std(diff_dbp)
-        plt.figure(figsize=(6,5))
-        plt.scatter(mean_dbp, diff_dbp, alpha=0.5)
-        plt.axhline(md_dbp, color='red', linestyle='--', label="Mean Diff")
-        plt.axhline(md_dbp + 1.96 * sd_dbp, color='blue', linestyle='--', label="+1.96 SD")
-        plt.axhline(md_dbp - 1.96 * sd_dbp, color='blue', linestyle='--', label="-1.96 SD")
-        plt.xlabel("Mean DBP (mmHg)")
-        plt.ylabel("Difference (mmHg)")
-        plt.title(f"Bland-Altman DBP: {method_name}")
-        plt.legend()
-        plt.savefig(os.path.join(output_dir, f"bland_altman_DBP_{method_name}.png"))
-        plt.close()
-        
-    comp_df = pd.DataFrame(comparisons)
-    comp_csv = os.path.join(output_dir, "ptt_bp_comparisons.csv")
-    comp_df.to_csv(comp_csv, index=False)
-    print(f"[INFO] PTT vs BP trend comparisons saved in {comp_csv}")
-
-def compare_all_ptt_methods(ptt_dict, output_dir):
-    import itertools
-    results = []
-    pairs = list(itertools.combinations(ptt_dict.keys(), 2))
-    for method1, method2 in pairs:
-        ptt1 = np.array(ptt_dict[method1])
-        ptt2 = np.array(ptt_dict[method2])
-        min_len = min(len(ptt1), len(ptt2))
-        ptt1 = ptt1[:min_len]
-        ptt2 = ptt2[:min_len]
-
-        # Verifica che entrambe le liste abbiano almeno 2 elementi
-        if len(ptt1) < 2 or len(ptt2) < 2:
-            print(f"[ERROR] Non ci sono abbastanza valori PTT validi per {method1} e {method2}.")
-            continue
-
-        # Calcola Pearson, MAE, RMSE
-        pearson_r, p_val = pearsonr(ptt1, ptt2)
-        mae = np.mean(np.abs(ptt1 - ptt2))
-        rmse = np.sqrt(np.mean((ptt1 - ptt2)**2))
-        results.append({
-            "Method 1": method1,
-            "Method 2": method2,
-            "Pearson r": pearson_r,
-            "p-value": p_val,
-            "MAE": mae,
-            "RMSE": rmse
-        })
-
-        # Plot Bland-Altman
-        mean_vals = (ptt1 + ptt2) / 2
-        diff_vals = ptt1 - ptt2
-        md = np.mean(diff_vals)
-        sd = np.std(diff_vals)
-        plt.figure(figsize=(6,5))
-        plt.scatter(mean_vals, diff_vals, alpha=0.5)
-        plt.axhline(md, color='red', linestyle='--', label="Mean Diff")
-        plt.axhline(md + 1.96 * sd, color='blue', linestyle='--', label="+1.96 SD")
-        plt.axhline(md - 1.96 * sd, color='blue', linestyle='--', label="-1.96 SD")
-        plt.xlabel("Mean PTT (s)")
-        plt.ylabel("Difference (s)")
-        plt.title(f"Bland-Altman: {method1} vs {method2}")
-        plt.legend()
-        plot_file = os.path.join(output_dir, f"bland_altman_{method1}_vs_{method2}.png")
-        plt.savefig(plot_file)
-        plt.close()
-        print(f"[INFO] Bland-Altman plot saved: {plot_file}")
-
-    # Salva i risultati in un file CSV
-    results_df = pd.DataFrame(results)
-    csv_file = os.path.join(output_dir, "ptt_comparisons.csv")
-    results_df.to_csv(csv_file, index=False)
-    print(f"[INFO] PTT comparisons results saved in: {csv_file}")
-
-def compare_ptt_methods(ptt_cross_corr, ptt_direct, output_dir, label):
-    """
-    Confronta i valori PTT calcolati con il metodo della cross-correlazione e il metodo diretto.
+def detect_peaks_and_notches(signal_data, sampling_rate, output_dir, label):
+    """ Rileva picchi, valli e tacche dicrotiche in un segnale e salva i risultati in file leggibili """
+    peaks, _ = signal.find_peaks(signal_data, distance=sampling_rate*0.4, height=np.mean(signal_data))
+    valleys, _ = signal.find_peaks(-signal_data, distance=sampling_rate*0.6)
     
-    :param ptt_cross_corr: Valori PTT calcolati con la cross-correlazione.
-    :param ptt_direct: Valori PTT calcolati con il metodo diretto.
-    :param output_dir: Directory di output per salvare i risultati.
-    :param label: Etichetta per identificare i file di output.
-    """
-    if len(ptt_cross_corr) < 2 or len(ptt_direct) < 2:
-        print(f"[ERROR] Non ci sono abbastanza valori PTT validi per {label}.")
-        return
-
-    # Assicurati che entrambe le liste abbiano la stessa lunghezza
-    min_length = min(len(ptt_cross_corr), len(ptt_direct))
-    ptt_cross_corr = np.array(ptt_cross_corr[:min_length])
-    ptt_direct = np.array(ptt_direct[:min_length])
-
-    # Calcola la correlazione di Pearson
-    correlation, p_value = pearsonr(ptt_cross_corr, ptt_direct)
-    print(f"[INFO] Correlation between Cross-Correlation and Direct PTT ({label}): {correlation:.3f} (p-value: {p_value:.3f})")
-
-    # Genera un grafico scatter per confrontare i due metodi
-    plt.figure(figsize=(10, 6))
-    plt.scatter(ptt_cross_corr, ptt_direct, alpha=0.7, color='blue', label=f"{label}")
-    plt.xlabel("PTT Cross-Correlation (s)")
-    plt.ylabel("PTT Direct (s)")
-    plt.title(f"Comparison of PTT Methods ({label})")
-    plt.legend()
-    plt.grid(True)
+    # La tacca dicrotica è spesso il secondo picco più piccolo tra due picchi principali
+    dicrotic_notches = []
+    for i in range(len(peaks) - 1):
+        segment = signal_data[peaks[i]:peaks[i+1]]
+        min_idx = np.argmin(segment) + peaks[i]
+        dicrotic_notches.append(min_idx)
     
-    output_path = os.path.join(output_dir, f"compare_ptt_methods_{label.replace(' ', '_')}.png")
-    plt.savefig(output_path)
-    plt.close()
-    print(f"[INFO] Comparison plot saved in {output_path}")
-
-def compare_bp_estimations(estimated_sbp_ppg, estimated_dbp_ppg, estimated_sbp_ppw, estimated_dbp_ppw, estimated_sbp_aix, estimated_dbp_aix, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix=""):
-    """
-    Confronta le diverse stime della pressione sanguigna (SBP e DBP) calcolando
-    il coefficiente di correlazione di Pearson tra PTT-PPG, PTT-PPW, AIx e AIx Red.
-
-    Salva i risultati e genera un grafico della matrice di correlazione.
-    """
-    print(f"\n[INFO] Comparing Blood Pressure Estimations with Pearson's Correlation ({label_suffix})...")
-
-    # Trova la lunghezza minima tra tutti i dati per uniformare
-    min_length = min(len(estimated_sbp_ppg), len(estimated_dbp_ppg), len(estimated_sbp_ppw), len(estimated_dbp_ppw), len(estimated_sbp_aix), len(estimated_dbp_aix), len(estimated_sbp_aix_red), len(estimated_dbp_aix_red))
-
-    # Tronca le liste alla lunghezza minima per allineare i dati
-    estimated_sbp_ppg = estimated_sbp_ppg[:min_length]
-    estimated_dbp_ppg = estimated_dbp_ppg[:min_length]
-    estimated_sbp_ppw = estimated_sbp_ppw[:min_length]
-    estimated_dbp_ppw = estimated_dbp_ppw[:min_length]
-    estimated_sbp_aix = estimated_sbp_aix[:min_length]
-    estimated_dbp_aix = estimated_dbp_aix[:min_length]
-    estimated_sbp_aix_red = estimated_sbp_aix_red[:min_length]
-    estimated_dbp_aix_red = estimated_dbp_aix_red[:min_length]
-
-    # Creazione DataFrame per analisi
-    data = {
-        "SBP_PPG": estimated_sbp_ppg,
-        "DBP_PPG": estimated_dbp_ppg,
-        "SBP_PPW": estimated_sbp_ppw,
-        "DBP_PPW": estimated_dbp_ppw,
-        "SBP_AIx": estimated_sbp_aix,
-        "DBP_AIx": estimated_dbp_aix,
-        "SBP_AIx_Red": estimated_sbp_aix_red,
-        "DBP_AIx_Red": estimated_dbp_aix_red,
-    }
-
-    df = pd.DataFrame(data)
-
-    # Calcola le correlazioni di Pearson
-    correlation_results = {}
-    comparisons = [
-        ("SBP_PPG", "SBP_PPW"),
-        ("SBP_PPG", "SBP_AIx"),
-        ("SBP_PPG", "SBP_AIx_Red"),
-        ("SBP_PPW", "SBP_AIx"),
-        ("SBP_PPW", "SBP_AIx_Red"),
-        ("SBP_AIx", "SBP_AIx_Red"),
-        ("DBP_PPG", "DBP_PPW"),
-        ("DBP_PPG", "DBP_AIx"),
-        ("DBP_PPG", "DBP_AIx_Red"),
-        ("DBP_PPW", "DBP_AIx"),
-        ("DBP_PPW", "DBP_AIx_Red"),
-        ("DBP_AIx", "DBP_AIx_Red"),
-    ]
-
-    for col1, col2 in comparisons:
-        if len(df[col1]) >= 2 and len(df[col2]) >= 2:
-            r_value, p_value = pearsonr(df[col1], df[col2])
-            correlation_results[f"{col1} vs {col2}"] = {"Pearson r": r_value, "p-value": p_value}
-        else:
-            print(f"[WARNING] Length of {col1} or {col2} is less than 2. Skipping correlation calculation.")
-
-    # Converti i risultati in DataFrame e salva
-    correlation_df = pd.DataFrame.from_dict(correlation_results, orient='index')
-    correlation_csv_path = os.path.join(output_dir, f"pearson_correlation_results{label_suffix}.csv")
-    correlation_df.to_csv(correlation_csv_path)
-    print(f"[INFO] Pearson correlation results saved to {correlation_csv_path}.")
-
-    # Matrice di correlazione
-    correlation_matrix = df.corr()
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", fmt=".2f")
-    plt.title(f"Correlation Matrix of BP Estimations ({label_suffix})")
-    correlation_matrix_path = os.path.join(output_dir, f"correlation_matrix{label_suffix}.png")
-    plt.savefig(correlation_matrix_path)
-    plt.close()
-    print(f"[INFO] Correlation matrix plot saved to {correlation_matrix_path}.")
-
-    print(f"[INFO] Blood pressure estimation comparison completed ({label_suffix}).")
-
-def train_personalized_model(ptt_values, sbp_values, dbp_values):
-    """
-    Allena una regressione lineare per stimare SBP e DBP a partire dai valori PTT,
-    utilizzando i dati reali del soggetto (modello personalizzato).
-
-    :param ptt_values: Array dei valori PTT del soggetto.
-    :param sbp_values: Array dei valori reali di SBP del soggetto.
-    :param dbp_values: Array dei valori reali di DBP del soggetto.
-    :return: Tuple con i coefficienti (a_sbp, b_sbp, a_dbp, b_dbp) tali che:
-             SBP = a_sbp * PTT + b_sbp, DBP = a_dbp * PTT + b_dbp.
-    """
-    ptt = np.array(ptt_values)
-    sbp = np.array(sbp_values)
-    dbp = np.array(dbp_values)
+    # Salva i risultati in file leggibili
+    np.savetxt(os.path.join(output_dir, f'{label}_peaks.txt'), peaks, fmt='%d')
+    np.savetxt(os.path.join(output_dir, f'{label}_valleys.txt'), valleys, fmt='%d')
+    np.savetxt(os.path.join(output_dir, f'{label}_dicrotic_notches.txt'), dicrotic_notches, fmt='%d')
     
-    # Utilizziamo np.polyfit per stimare i coefficienti (retta di regressione)
-    a_sbp, b_sbp = np.polyfit(ptt, sbp, 1)
-    a_dbp, b_dbp = np.polyfit(ptt, dbp, 1)
-    
-    print(f"[INFO] Personalized model coefficients:")
-    print(f"  SBP: a = {a_sbp:.3f}, b = {b_sbp:.3f}")
-    print(f"  DBP: a = {a_dbp:.3f}, b = {b_dbp:.3f}")
-    
-    return a_sbp, b_sbp, a_dbp, b_dbp
-
-def correlate_bp_ptt(ptt_values, bp_values, label):
-    """
-    Calcola la correlazione di Pearson tra PTT e pressione sanguigna.
-    """
-    if len(ptt_values) == 0 or len(bp_values) == 0:
-        print(f"[ERROR] Nessun valore PTT o BP valido per {label}!")
-        return None
-
-    min_length = min(len(ptt_values), len(bp_values))
-    ptt_values = ptt_values[:min_length]
-    bp_values = bp_values[:min_length]
-
-    # Verifica se gli array sono costanti
-    if np.all(ptt_values == ptt_values[0]) or np.all(bp_values == bp_values[0]):
-        print(f"[ERROR] Input costante per {label}. La correlazione non è definita.")
-        return None
-
-    correlation, p_value = pearsonr(ptt_values, bp_values)
-    print(f"[INFO] Correlazione tra PTT e {label}: {correlation:.3f} (p-value: {p_value:.3f})")
-    return correlation
-
-def evaluate_estimations(estimated_bp, real_bp, method_name, output_dir):
-    """
-    Valuta l'accuratezza delle stime della pressione sanguigna rispetto ai valori reali.
-    Calcola MAE, RMSE e Pearson correlation e genera il Bland-Altman plot.
-    """
-    if len(estimated_bp) == 0 or len(real_bp) == 0:
-        print(f"[ERROR] Dati mancanti per {method_name}. Salto il calcolo.")
-        return
-
-    # Assicurarsi che entrambe le liste abbiano la stessa lunghezza
-    min_length = min(len(estimated_bp), len(real_bp))
-    estimated_bp = np.array(estimated_bp[:min_length])
-    real_bp = np.array(real_bp[:min_length])
-
-    # 1️⃣ MAE - Mean Absolute Error
-    mae = np.mean(np.abs(estimated_bp - real_bp))
-
-    # 2️⃣ RMSE - Root Mean Squared Error
-    rmse = np.sqrt(np.mean((estimated_bp - real_bp) ** 2))
-
-    # 3️⃣ Pearson Correlation
-    correlation, p_value = pearsonr(estimated_bp, real_bp)
-
-    # 4️⃣ Bland-Altman Plot
-    mean_bp = (estimated_bp + real_bp) / 2
-    diff_bp = estimated_bp - real_bp  # Differenza tra stima e valore reale
-    mean_diff = np.mean(diff_bp)
-    std_diff = np.std(diff_bp)
-
-    plt.figure(figsize=(8, 5))
-    plt.scatter(mean_bp, diff_bp, color='blue', alpha=0.5, label=method_name)
-    plt.axhline(mean_diff, color='red', linestyle='--', label="Mean Diff")
-    plt.axhline(mean_diff + 1.96 * std_diff, color='black', linestyle='dotted', label="+1.96 SD")
-    plt.axhline(mean_diff - 1.96 * std_diff, color='black', linestyle='dotted', label="-1.96 SD")
-    plt.xlabel("Mean BP (mmHg)")
-    plt.ylabel("Difference (Estimated - Real) (mmHg)")
-    plt.title(f"Bland-Altman Plot - {method_name}")
-    plt.legend()
-    plt.grid()
-    
-    # Salva il grafico
-    output_path = f"{output_dir}/bland_altman_{method_name}.png"
-    plt.savefig(output_path)
-    plt.close()
-    print(f"[INFO] Bland-Altman Plot salvato in {output_path}")
-
-    # Stampa i risultati
-    print(f"\n[RESULTS] {method_name}")
-    print(f"MAE: {mae:.2f} mmHg")
-    print(f"RMSE: {rmse:.2f} mmHg")
-    print(f"Pearson Correlation: {correlation:.2f} (p-value: {p_value:.3f})")
-
-    return mae, rmse, correlation, p_value
-
-def estimate_sbp_from_model(ptt_values, a_sbp, b_sbp):
-    """
-    Stima la SBP a partire dai valori PTT usando i coefficienti appresi.
-    
-    :param ptt_values: Array dei valori PTT.
-    :param a_sbp: Coefficiente della regressione per la SBP.
-    :param b_sbp: Intercetta della regressione per la SBP.
-    :return: Array di SBP stimate.
-    """
-    ptt_values = np.array(ptt_values)
-    return a_sbp * ptt_values + b_sbp
-
-def estimate_dbp_from_model(ptt_values, a_dbp, b_dbp):
-    """
-    Stima la DBP a partire dai valori PTT usando i coefficienti appresi.
-    
-    :param ptt_values: Array dei valori PTT.
-    :param a_dbp: Coefficiente della regressione per la DBP.
-    :param b_dbp: Intercetta della regressione per la DBP.
-    :return: Array di DBP stimate.
-    """
-    ptt_values = np.array(ptt_values)
-    return a_dbp * ptt_values + b_dbp
-
-import matplotlib.pyplot as plt
-
-def plot_ptt_vs_bp(ptt_values, bp_values, label, output_dir):
-    """
-    Crea un grafico scatter per visualizzare la correlazione tra PTT e pressione sanguigna.
-    """
-    min_length = min(len(ptt_values), len(bp_values))
-    ptt_values = ptt_values[:min_length]
-    bp_values = bp_values[:min_length]
-
-    plt.figure(figsize=(8, 5))
-    plt.scatter(ptt_values, bp_values, alpha=0.7, color='blue', label=f"{label}")
-    plt.xlabel("Pulse Transit Time (PTT) [s]")
-    plt.ylabel("Blood Pressure (mmHg)")
-    plt.title(f"Correlazione tra PTT e {label}")
-    plt.legend()
-    plt.grid(True)
-    
-    output_path = os.path.join(output_dir, f"ptt_vs_{label.replace(' ', '_')}.png")
-    plt.savefig(output_path)
-    plt.close()
-    print(f"[INFO] Grafico salvato in {output_path}")
+    return peaks, valleys, np.array(dicrotic_notches)
 
 def main():
     # Step 0: Initialize paths and configurations
@@ -2182,15 +2338,26 @@ def main():
     print(f"[INFO] Using FPS: {sampling_rate} for analysis\n")
 
     # Percorsi ai file di pressione sanguigna
-    bp_systolic_file = "/Volumes/DanoUSB/Physiology/M005/T1/LA Systolic BP_mmHg.txt"
-    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/M005/T1/BP Dia_mmHg.txt"
+    bp_systolic_file = "/Volumes/DanoUSB/Physiology/M042/T3/LA Systolic BP_mmHg.txt"
+    bp_diastolic_file = "/Volumes/DanoUSB/Physiology/M042/T3/BP Dia_mmHg.txt"
 
-    # Lettura della pressione sanguigna
+    # Lettura della pressione sanguigna di riferimento reali
     bp_systolic = read_blood_pressure_data(bp_systolic_file)
     bp_diastolic = read_blood_pressure_data(bp_diastolic_file)
 
-    print(f"[INFO] Systolic BP: {bp_systolic[:10]}")
-    print(f"[INFO] Diastolic BP: {bp_diastolic[:10]}")
+    # Funzione per calcolare la media di ogni finestra
+    def calculate_windowed_mean(data, num_windows):
+        window_size = len(data) // num_windows
+        windowed_means = [np.mean(data[i*window_size:(i+1)*window_size]) for i in range(num_windows)]
+        return np.array(windowed_means)
+
+    # Calcola i valori medi suddivisi in 20 finestre
+    num_windows = 20
+    bp_systolic = calculate_windowed_mean(bp_systolic, num_windows)
+    bp_diastolic = calculate_windowed_mean(bp_diastolic, num_windows)
+
+    print(f"[INFO] Systolic BP (mean of 20 windows): {bp_systolic}")
+    print(f"[INFO] Diastolic BP (mean of 20 windows): {bp_diastolic}")
 
     # Step 1: Calculate ROI using tracking
     output_roi_path = os.path.join(output_dir, "tracked_neck_roi.json")
@@ -2220,18 +2387,16 @@ def main():
     filtered_neck_green = preprocess_and_filter_signals(neck_green, sampling_rate, output_dir, "neck_green")
 
     # Per il collo, si assume che T_mean_signals_neck sia già disponibile
-    filtered_neck = preprocess_and_filter_signals(T_mean_signals_neck, sampling_rate, output_dir, "neck")
+    filtered_neck_rgb = preprocess_and_filter_signals(T_mean_signals_neck, sampling_rate, output_dir, "neck")
 
     # Step 6: Estrai il BVP
     print("\n[STEP 6] Extracting BVP...")
-    # Per il fronte utilizziamo tutti e tre i canali (R, G, B)
     min_length = min(len(filtered_R_forehead), len(filtered_G_forehead), len(filtered_B_forehead))
     filtered_R_forehead = filtered_R_forehead[:min_length]
     filtered_G_forehead = filtered_G_forehead[:min_length]
     filtered_B_forehead = filtered_B_forehead[:min_length]
     filtered_forehead = np.vstack((filtered_R_forehead, filtered_G_forehead, filtered_B_forehead)).T
     bvp_forehead = cpu_CHROM(filtered_forehead, output_dir, label="forehead")
-    # Per il collo, utilizziamo solo il segnale verde
     bvp_neck, neck_peaks = compute_bvp_green_neck(filtered_neck_green, sampling_rate, output_dir, label="neck")      
     print("[INFO] BVP signals extracted successfully.")
 
@@ -2241,8 +2406,8 @@ def main():
     neck_peaks_ppg = find_peaks_in_signal(bvp_neck, fps=sampling_rate, output_dir=output_dir, label="neck_ppg")
     neck_peaks_ppw = find_peaks_in_signal(ppw_neck, fps=sampling_rate, output_dir=output_dir, label="neck_ppw")
 
-    # Visualizzazione della sincronizzazione dei picchi
-    plot_peak_synchronization(forehead_peaks, neck_peaks_ppg, bvp_forehead, bvp_neck, sampling_rate, output_dir)
+    # # Visualizzazione della sincronizzazione dei picchi
+    # plot_peak_synchronization(forehead_peaks, neck_peaks_ppg, bvp_forehead, bvp_neck, sampling_rate, output_dir)
 
     # Step 8: Calculate PTT using Cross-Correlation Method
     print("\n[STEP 8] Calculating PTT using Cross-Correlation Method...")
@@ -2306,11 +2471,10 @@ def main():
     forehead_peaks_conv = find_peaks_in_signal(bvp_forehead_conv, fps=sampling_rate, output_dir=output_dir, label="forehead_conv")
     forehead_peaks_spline = find_peaks_in_signal(bvp_forehead_spline, fps=sampling_rate, output_dir=output_dir, label="forehead_spline")
 
-    # Visualizzazione della sincronizzazione dei picchi per entrambe le interpolazioni
-    plot_peak_synchronization(forehead_peaks_conv, neck_peaks_conv, bvp_forehead_conv, bvp_neck_conv, sampling_rate, output_dir)
-    plot_peak_synchronization(forehead_peaks_spline, neck_peaks_spline, bvp_forehead_spline, bvp_neck_spline, sampling_rate, output_dir)
+    # # Visualizzazione della sincronizzazione dei picchi per entrambe le interpolazioni
+    # plot_peak_synchronization(forehead_peaks_conv, neck_peaks_conv, bvp_forehead_conv, bvp_neck_conv, sampling_rate, output_dir)
+    # plot_peak_synchronization(forehead_peaks_spline, neck_peaks_spline, bvp_forehead_spline, bvp_neck_spline, sampling_rate, output_dir)
 
-    # Step 8: Calculate PTT using Cross-Correlation Method for both interpolations
     print("\n[STEP 8] Calculating PTT using Cross-Correlation Method...")
 
     if len(bvp_forehead_conv) > 0 and len(bvp_neck_conv) > 0:
@@ -2331,7 +2495,6 @@ def main():
         ptt_cross_corr_ppw_spline = validate_ptt(ptt_cross_corr_ppw_spline)
         print(f"[INFO] PTT Forehead-PPW Neck (Cross-Correlation, Spline): {ptt_cross_corr_ppw_spline}")
 
-    # Step 9: Calculate PTT using Direct Method for both interpolations
     print("\n[STEP 9] Calculating PTT using Direct Method...")
 
     if len(bvp_forehead_conv) > 0 and len(bvp_neck_conv) > 0:
@@ -2351,31 +2514,53 @@ def main():
         ptt_direct_ppw_spline = calculate_ptt_direct(forehead_peaks_spline, neck_peaks_ppw, sampling_rate, output_dir, label="PPG_F_PPW_N_spline")
         ptt_direct_ppw_spline = validate_ptt(ptt_direct_ppw_spline)
         print(f"[INFO] PTT Forehead-PPW Neck (Direct, Spline): {ptt_direct_ppw_spline}")
+
         # Calcola AIx per tutti i BVP calcolati
         print("\n[STEP 10] Calculating AIx...")
         aix_values_conv = calculate_aix(bvp_forehead_conv, bvp_neck, forehead_peaks_conv, neck_peaks_ppg, sampling_rate, output_dir)
         aix_values_spline = calculate_aix(bvp_forehead_spline, bvp_neck, forehead_peaks_spline, neck_peaks_ppg, sampling_rate, output_dir)
         aix_values_red = calculate_aix_red(filtered_R_forehead, bvp_neck, forehead_peaks, neck_peaks_ppg, sampling_rate, output_dir)
-        #aix_values_red = calculate_aix_red(filtered_R_forehead, bvp_neck, forehead_peaks, neck_peaks_ppg, sampling_rate, output_dir)
         print(f"[INFO] AIx values calculated successfully.")
+
+        # # Calcola AIx per i segnali PPG e PPW
+        # print("\n[STEP 10] Calculating AIx...")
+        # aix_segments_ppg, aix_segments_ppw = compute_aix(bvp_forehead, ppw_neck, sampling_rate, 6, output_dir, label="Forehead_Neck")
+        # print(f"[INFO] AIx segments (PPG): {aix_segments_ppg}")
+        # print(f"[INFO] AIx segments (PPW): {aix_segments_ppw}")
+
+    # Modello personalizzato
+    ptt_methods = {
+        "Direct_Conv": ptt_direct_conv,
+        "Direct_Spline": ptt_direct_spline,
+        "CrossConv": ptt_cross_corr_conv,
+        "CrossSpline": ptt_cross_corr_spline
+    }
+
+    a_sbp, b_sbp, a_dbp, b_dbp = train_personalized_model(ptt_direct_conv, bp_systolic, bp_diastolic)
+
+    # Stima BP utilizzando il modello personalizzato
+    estimated_sbp_personalized = estimate_sbp_from_model(ptt_direct_conv, a_sbp, b_sbp)
+    estimated_dbp_personalized = estimate_dbp_from_model(ptt_direct_conv, a_dbp, b_dbp)
+
+    # Visualizza o salva i risultati per il modello personalizzato
+    print(f"[INFO] Estimated SBP (Personalized): {estimated_sbp_personalized}")
+    print(f"[INFO] Estimated DBP (Personalized): {estimated_dbp_personalized}")
 
     # Stima della pressione sanguigna
     print("\n[STEP 11] Estimating Blood Pressure...")
-    estimated_sbp_conv = estimate_systolic_blood_pressure(ptt_direct_conv, gender)
-    estimated_dbp_conv = estimate_diastolic_blood_pressure(ptt_direct_conv, gender)
-    estimated_sbp_spline = estimate_systolic_blood_pressure(ptt_direct_spline, gender)
-    estimated_dbp_spline = estimate_diastolic_blood_pressure(ptt_direct_spline, gender)
-    estimated_sbp_aix_conv, estimated_dbp_aix_conv = estimate_bp_from_aix(aix_values_conv, output_dir)
-    estimated_sbp_aix_spline, estimated_dbp_aix_spline = estimate_bp_from_aix(aix_values_spline, output_dir)
-    estimated_sbp_aix_red, estimated_dbp_aix_red = estimate_bp_from_aix(aix_values_red, output_dir)
+    estimated_sbp_conv = estimate_sbp_from_model(ptt_direct_conv, a_sbp, b_sbp)
+    estimated_dbp_conv = estimate_dbp_from_model(ptt_direct_conv, a_dbp, b_dbp)
+    estimated_sbp_spline = estimate_sbp_from_model(ptt_direct_spline, a_sbp, b_sbp)
+    estimated_dbp_spline = estimate_dbp_from_model(ptt_direct_spline, a_dbp, b_dbp)
+    estimated_sbp_aix_conv, estimated_dbp_aix_conv = estimate_bp_from_aix(aix_values_conv, gender, output_dir)
+    estimated_sbp_aix_spline, estimated_dbp_aix_spline = estimate_bp_from_aix(aix_values_spline, gender, output_dir)
+    estimated_sbp_aix_red, estimated_dbp_aix_red = estimate_bp_from_aix(aix_values_red, gender, output_dir)
 
     # Stima della pressione sanguigna utilizzando i BVP puliti
     print("\n[STEP 11] Estimating Blood Pressure with Cleaned BVP...")
-    estimated_sbp_clean = estimate_systolic_blood_pressure(ptt_direct, gender)
-    estimated_dbp_clean = estimate_diastolic_blood_pressure(ptt_direct, gender)
-    estimated_sbp_aix_clean, estimated_dbp_aix_clean = estimate_bp_from_aix(aix_values_conv, output_dir)
-
-
+    estimated_sbp_clean = estimate_sbp_from_model(ptt_direct, a_sbp, b_sbp)
+    estimated_dbp_clean = estimate_dbp_from_model(ptt_direct, a_dbp, b_dbp)
+    estimated_sbp_aix_clean, estimated_dbp_aix_clean = estimate_bp_from_aix(aix_values_conv, gender, output_dir)
 
     np.savetxt(os.path.join(output_dir, "estimated_sbp_aix_red.txt"), estimated_sbp_aix_red, fmt="%.2f")
     np.savetxt(os.path.join(output_dir, "estimated_dbp_aix_red.txt"), estimated_dbp_aix_red, fmt="%.2f")
@@ -2415,43 +2600,33 @@ def main():
     # compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_spline, estimated_dbp_aix_spline, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Conv_vs_Spline_vs_AIx_vs_AIxRed_2")
     
 
-
     print("\n[STEP 13] Comparing Blood Pressure Estimation Methods...")
-    compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_conv, estimated_dbp_aix_conv, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Conv_vs_Spline_vs_AIx_1")
-    compare_bp_estimations(estimated_sbp_conv, estimated_dbp_conv, estimated_sbp_spline, estimated_dbp_spline, estimated_sbp_aix_spline, estimated_dbp_aix_spline, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Conv_vs_Spline_vs_AIx_2")
-    compare_bp_estimations(estimated_sbp_clean, estimated_dbp_clean, estimated_sbp_clean, estimated_dbp_clean, estimated_sbp_aix_clean, estimated_dbp_aix_clean, estimated_sbp_aix_red, estimated_dbp_aix_red, output_dir, label_suffix="_Cleaned_BVP")
-    
+
+    compare_bp_estimations_with_real(
+        estimated_sbp_conv, estimated_dbp_conv,
+        estimated_sbp_spline, estimated_dbp_spline,
+        estimated_sbp_aix_conv, estimated_dbp_aix_conv,
+        estimated_sbp_aix_red, estimated_dbp_aix_red,
+        estimated_sbp_personalized, estimated_dbp_personalized,
+        bp_systolic, bp_diastolic, output_dir,
+        label_suffix="_Convolution_vs_Spline_vs_AIx_Conv_vs_AIx_Red_vs_Personalized"
+    )
+
+    # Confronto tra le stime della pressione sanguigna ottenute con AIx e AIx Red
+    compare_aix_estimations_with_real(
+        estimated_sbp_aix_clean, estimated_dbp_aix_clean,
+        estimated_sbp_aix_red, estimated_dbp_aix_red,
+        bp_systolic, bp_diastolic, output_dir,
+        label_suffix="_AIx_vs_Real"
+    )
+
     print("\n[STEP 14] Computing correlation between PTT and Blood Pressure...\n")
     correlate_bp_ptt(ptt_direct_conv, bp_systolic, "SBP")
     correlate_bp_ptt(ptt_direct_conv, bp_diastolic, "DBP")
     correlate_bp_ptt(ptt_direct_spline, bp_systolic, "SBP")
     correlate_bp_ptt(ptt_direct_spline, bp_diastolic, "DBP")
 
-
-    ptt_methods = {
-    "Direct_Conv": ptt_direct_conv,
-    "Direct_Spline": ptt_direct_spline,
-    "CrossConv": ptt_cross_corr_conv,
-    "CrossSpline": ptt_cross_corr_spline
-    }
-    # ... all'interno del main() dopo aver calcolato ptt_direct_conv, bp_systolic e bp_diastolic
-
-    # # Esempio: usa ptt_direct_conv come array dei valori PTT per il soggetto attuale
-    # # Assicurati che bp_systolic e bp_diastolic siano allineati con i dati PTT (ad es. stessi intervalli)
-    # a_sbp, b_sbp, a_dbp, b_dbp = train_personalized_model(ptt_direct_conv, bp_systolic, bp_diastolic)
-
-    # # Stima BP utilizzando il modello personalizzato
-    # estimated_sbp_personalized = estimate_sbp_from_model(ptt_direct_conv, a_sbp, b_sbp)
-    # estimated_dbp_personalized = estimate_dbp_from_model(ptt_direct_conv, a_dbp, b_dbp)
-
-    # # Visualizza o salva i risultati per il modello personalizzato
-    # print(f"[INFO] Estimated SBP (Personalized): {estimated_sbp_personalized}")
-    # print(f"[INFO] Estimated DBP (Personalized): {estimated_dbp_personalized}")
-
-    # # Potresti anche valutare MAE, RMSE, correlazione, e generare plot Bland-Altman
-    # evaluate_estimations(estimated_sbp_personalized, bp_systolic, "Personalized_SBP", output_dir)
-    # evaluate_estimations(estimated_dbp_personalized, bp_diastolic, "Personalized_DBP", output_dir)
-
+    # Confronto tra i metodi PTT
     compare_all_ptt_methods(ptt_methods, output_dir)
 
     # Plot dei risultati

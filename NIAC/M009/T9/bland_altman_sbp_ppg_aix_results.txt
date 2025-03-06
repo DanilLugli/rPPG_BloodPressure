@@ -1,0 +1,5 @@
+Comparison: SBP PPG vs AIx
+Mean Difference (MD): -11.998
+Standard Deviation of Difference (SD): 9.133
+Upper limit (MD + 1.96 * SD): 5.902
+Lower limit (MD - 1.96 * SD): -29.898
